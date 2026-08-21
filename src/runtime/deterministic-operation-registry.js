@@ -90,7 +90,7 @@ function observedResult(stdout, stderr = '', exitCode = 0) {
   const now = new Date().toISOString();
   return { exitCode, signal: null, timedOut: false, outputTruncated: false, stdout, stderr, startedAt: now, finishedAt: now, lastOutputAt: stdout || stderr ? now : null };
 }
-function executionScratch(buildId) { return `scratch/cmake-${buildId}`; }
+function executionScratch(buildId) { return { kind: 'scratch', name: `cmake-${buildId}` }; }
 
 function scopedProcessRunner(processRunner, security, context) {
   if (!processRunner || typeof processRunner.run !== 'function') return processRunner;
@@ -120,6 +120,15 @@ export class DeterministicOperationRegistry {
   }
   has(name) { return this.#operations.has(name); }
   names() { return [...this.#operations.keys()].sort(); }
+  executionClass(name) {
+    if (!this.#operations.has(name)) throw new PolicyError(`controller plan references unregistered operation ${name}`);
+    return deterministicOperationSecurity(name).executionClass;
+  }
+  usesEnvironmentScratch(name) {
+    const adapter = this.#operations.get(name);
+    if (!adapter) throw new PolicyError(`controller plan references unregistered operation ${name}`);
+    return adapter.environmentScratch === true;
+  }
   describe() {
     return this.names().map((name) => {
       const adapter = this.#operations.get(name);
@@ -212,6 +221,7 @@ function toolchainProbeAdapter(toolchains) {
 function cmakeConfigureAdapter() {
   return {
     layer: 'core',
+    environmentScratch: true,
     validate(raw) {
       const params = objectParams(raw, 'cmake.configure');
       onlyKeys(params, new Set(['sourcePath', 'buildId', 'buildType', 'generator', 'architecture']), 'cmake.configure');
@@ -248,6 +258,7 @@ function cmakeConfigureAdapter() {
 function cmakeBuildAdapter() {
   return {
     layer: 'core',
+    environmentScratch: true,
     validate(raw) {
       const params = objectParams(raw, 'cmake.build');
       onlyKeys(params, new Set(['buildId', 'config', 'target']), 'cmake.build');
@@ -275,6 +286,7 @@ function cmakeBuildAdapter() {
 function ctestAdapter() {
   return {
     layer: 'core',
+    environmentScratch: true,
     validate(raw) {
       const params = objectParams(raw, 'ctest.run');
       onlyKeys(params, new Set(['buildId', 'config']), 'ctest.run');

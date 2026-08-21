@@ -28,12 +28,16 @@ export function scopeForExecutionDirectory(workspaceRoot, directory) {
 
 function scopedRunner(delegate, workspaceRoot) {
   if (!delegate || typeof delegate.run !== 'function') throw new TypeError('execution runner delegate is incomplete');
+  const scopeRequest = (request) => {
+    if (request?.executionClass !== 'repository-code' || (request.repository && request.runId)) return request;
+    const scope = scopeForExecutionDirectory(workspaceRoot, request.cwd);
+    return { ...request, ...scope };
+  };
   return {
-    async run(request) {
-      if (request?.executionClass !== 'repository-code' || (request.repository && request.runId)) return delegate.run(request);
-      const scope = scopeForExecutionDirectory(workspaceRoot, request.cwd);
-      return delegate.run({ ...request, ...scope });
-    },
+    run(request) { return delegate.run(scopeRequest(request)); },
+    cleanup: typeof delegate.cleanup === 'function'
+      ? (request) => delegate.cleanup(scopeRequest(request))
+      : undefined,
   };
 }
 

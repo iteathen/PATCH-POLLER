@@ -31,6 +31,7 @@ const MANIFEST_LIMIT = 24 * 1024 * 1024;
 const TOOL_RESOURCE_LIMIT = 4 * 1024 * 1024;
 const TOOL_RESOURCE_COUNT = 32;
 const AGENT_FILE = fileURLToPath(new URL('../guest/workspace-agent.mjs', import.meta.url));
+const RESOURCE_AGENT_FILE = fileURLToPath(new URL('../guest/resource-agent.mjs', import.meta.url));
 
 function requireObject(value, name) { if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`${name} must be an object`); return value; }
 function onlyKeys(value, allowed, name) { for (const key of Object.keys(value)) if (!allowed.has(key)) throw new TypeError(`${name}.${key} is not allowed`); }
@@ -215,7 +216,7 @@ function parseAgentResult(outcome, action) {
   try { return JSON.parse(result.stdout); } catch { throw new Error(`${action} returned invalid structured output`); }
 }
 
-function descriptorFor(invocation, resolved, environment, stdin, transfers, protectedValues, entryLocation = null) {
+function descriptorFor(invocation, resolved, environment, stdin, transfers, protectedValues, entryLocation = null, scratchRoot = null) {
   if (!resolved || typeof resolved.program !== 'string' || !SAFE_NAME.test(resolved.program)) throw new Error('logical tool did not resolve to a safe guest program');
   const fixed = resolved.arguments ?? [];
   if (!Array.isArray(fixed) || fixed.some((entry) => typeof entry !== 'string')) throw new Error('logical tool fixed arguments are invalid');
@@ -223,7 +224,14 @@ function descriptorFor(invocation, resolved, environment, stdin, transfers, prot
   const locationIndex = new Map();
   const locate = (kind, name) => {
     const key = `${kind}:${name}`;
-    if (!locationIndex.has(key)) { locationIndex.set(key, locations.length); locations.push({ class: kind, path: `ports/${name}` }); }
+    if (!locationIndex.has(key)) {
+      const location = kind === 'scratch'
+        ? { class: 'scratch', path: `${scratchRoot}/${name}` }
+        : { class: kind, path: `ports/${name}` };
+      if (kind === 'scratch' && typeof scratchRoot !== 'string') throw new Error('operation scratch root is unavailable');
+      locationIndex.set(key, locations.length);
+      locations.push(location);
+    }
     return locationIndex.get(key);
   };
   const argumentsList = [];
@@ -237,7 +245,10 @@ function descriptorFor(invocation, resolved, environment, stdin, transfers, prot
     else argumentsList.push({ kind: 'location', index: locate(argument.kind, argument.name) });
   }
   const known = new Set(transfers.map((entry) => `${entry.direction}:${entry.name}`));
-  for (const argument of invocation.arguments) if (argument.kind !== 'literal' && !known.has(`${argument.kind}:${argument.name}`)) throw new Error('operation argument transfer is not registered');
+  for (const argument of invocation.arguments) {
+    if (argument.kind === 'literal' || argument.kind === 'scratch') continue;
+    if (!known.has(`${argument.kind}:${argument.name}`)) throw new Error('operation argument transfer is not registered');
+  }
   for (const value of Object.values(environment)) {
     if (protectedValues.some((protectedValue) => value.includes(protectedValue))) {
       throw new Error('operation environment contains a protected control-plane value');
@@ -336,6 +347,7 @@ export async function createRepositoryExecution({
     reason: null,
   };
   const agentBytes = await readFile(AGENT_FILE);
+  const resourceAgentBytes = await readFile(RESOURCE_AGENT_FILE);
   const stagingRoot = path.join(path.resolve(stateDirectory), 'repository-execution', 'staging');
   await mkdir(stagingRoot, { recursive: true, mode: 0o700 });
 
@@ -356,9 +368,12 @@ export async function createRepositoryExecution({
       let source = null;
       let evidenceIdentity = null;
       const agentLocation = { class: 'input', path: 'control/workspace-agent.mjs' };
+      const resourceAgentLocation = { class: 'input', path: 'control/resource-agent.mjs' };
       const stateLocation = { class: 'cache', path: 'source-state.json' };
       const sourceManifestLocation = { class: 'input', path: 'source/manifest.json' };
       const candidateDirectory = { class: 'output', path: 'candidate' };
+      const scratchRoot = `subjects/${subject}/runs/${scope.runId}`;
+      const scratchRunLocation = { class: 'scratch', path: scratchRoot };
 
       const runAgent = async (action, argumentsList, { directory = '.', timeoutMs = 120_000, maxOutputBytes = 256 * 1024, signal = null, onActivity = null } = {}) => {
         const outcome = await channel.execute(target, {
@@ -416,7 +431,7 @@ export async function createRepositoryExecution({
           if (!source || !evidenceIdentity) throw new Error('repository execution session was not prepared');
           const resolved = await resolveTool(invocation.tool, { subject, profile: route.profile, scope: structuredClone(scope) });
           const entryLocation = await stageToolResources(channel, target, resolved);
-          const materialized = descriptorFor(invocation, resolved, environment, stdin, transfers, protectedEnvironmentValues, entryLocation);
+          const materialized = descriptorFor(invocation, resolved, environment, stdin, transfers, protectedEnvironmentValues, entryLocation, scratchRoot);
           const descriptorBytes = Buffer.from(`${JSON.stringify(materialized.descriptor)}\n`, 'utf8');
           if (descriptorBytes.length > 8 * 1024 * 1024) throw new Error('repository operation descriptor exceeds the bounded staging limit');
           const descriptorDigest = createHash('sha256').update(descriptorBytes).digest('hex').slice(0, 32);
@@ -462,6 +477,29 @@ export async function createRepositoryExecution({
             ensureActive(signal);
             await applyStagedFileTreeDelta({ root, stagingRoot: stage, manifest: staged, acceptPath: repositoryPathAllowed, signal });
           } finally { await rm(stage, { recursive: true, force: true }); }
+        },
+
+        async cleanup({ resource, signal = null } = {}) {
+          ensureActive(signal);
+          if (resource !== 'scratch') throw new Error('repository execution cleanup resource is unsupported');
+          await preparation.ensure(target);
+          ensureActive(signal);
+          const health = await channel.health(target);
+          if (!health.ready) throw new Error(health.reason ?? 'environment exchange is not ready');
+          await sendBytes(channel, target, resourceAgentBytes, resourceAgentLocation);
+          const outcome = await channel.execute(target, {
+            program: 'node',
+            arguments: [resourceAgentLocation, 'remove-directory', scratchRunLocation],
+            directory: { class: 'work', path: '.' },
+            environment: {}, input: null, timeoutMs: 120_000, maxOutputBytes: 64 * 1024,
+          }, { signal, pollIntervalMs: 500 });
+          const parsed = parseAgentResult(outcome, 'resource cleanup');
+          if (parsed.state !== 'verified-absent' || typeof parsed.removed !== 'boolean') throw new Error('resource cleanup did not verify absence');
+          return {
+            state: parsed.state,
+            removed: parsed.removed,
+            identity: hashIdentity({ target, subject, runId: scope.runId, resource }).slice(0, 128),
+          };
         },
         close: releaseSession,
       };

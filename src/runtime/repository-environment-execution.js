@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import { PolicyError } from '../errors.js';
 import {
+  REPOSITORY_EXECUTION_CLEANUP_RESULT_PROTOCOL,
   REPOSITORY_EXECUTION_RESULT_PROTOCOL,
+  normalizeRepositoryExecutionCleanupRequest,
+  normalizeRepositoryExecutionCleanupResult,
   normalizeRepositoryExecutionRequest,
   normalizeRepositoryExecutionResult,
   normalizeRepositoryExecutionStatus,
@@ -30,6 +33,16 @@ function preparedIdentity(raw) {
     throw new PolicyError('repository execution preparation did not return a bounded evidence identity');
   }
   return raw.identity;
+}
+
+function cleanupEvidence(raw) {
+  if (!raw || typeof raw !== 'object' || raw.state !== 'verified-absent' || typeof raw.removed !== 'boolean') {
+    throw new PolicyError('repository execution cleanup did not verify the owned resource absent');
+  }
+  if (typeof raw.identity !== 'string' || !/^[A-Za-z][A-Za-z0-9_.-]{0,127}$/u.test(raw.identity)) {
+    throw new PolicyError('repository execution cleanup did not return a bounded evidence identity');
+  }
+  return { identity: raw.identity, state: raw.state, removed: raw.removed };
 }
 
 function abortError(signal) {
@@ -128,6 +141,29 @@ export class RepositoryEnvironmentExecution {
         finishedAt: result.finishedAt ?? null,
         lastOutputAt: result.lastOutputAt ?? null,
         evidence: { identity, scope: request.scope },
+      });
+    } finally {
+      if (typeof session.close === 'function') await session.close();
+    }
+  }
+
+  async cleanup(rawRequest) {
+    const request = normalizeRepositoryExecutionCleanupRequest(rawRequest);
+    if (this.#status.ready !== true) {
+      throw new PolicyError(`repository execution is unavailable: ${this.#status.reason ?? 'execution boundary is not ready'}`);
+    }
+    ensureActive(request.signal);
+    const session = assertSession(await this.#open(structuredClone(request.scope)));
+    try {
+      if (typeof session.cleanup !== 'function') throw new PolicyError('repository execution session does not provide cleanup');
+      const observed = cleanupEvidence(await session.cleanup({ resource: request.resource, signal: request.signal }));
+      ensureActive(request.signal);
+      return normalizeRepositoryExecutionCleanupResult({
+        protocol: REPOSITORY_EXECUTION_CLEANUP_RESULT_PROTOCOL,
+        resource: request.resource,
+        state: observed.state,
+        removed: observed.removed,
+        evidence: { identity: observed.identity, scope: request.scope },
       });
     } finally {
       if (typeof session.close === 'function') await session.close();

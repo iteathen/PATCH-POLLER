@@ -75,19 +75,21 @@ test('repository CMake operations derive only logical tool and environment-relat
   await registry.execute('cmake.build', { buildId: 'release', config: 'Release', target: 'all' }, context);
   await registry.execute('ctest.run', { buildId: 'release', config: 'Release' }, context);
 
+  const scratch = { kind: 'scratch', name: 'cmake-release' };
   assert.equal(observed[0].repositoryTool, 'cmake');
   assert.deepEqual(observed[0].args, [
-    '-S', '.', '-B', 'scratch/cmake-release', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
+    '-S', '.', '-B', scratch, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
   ]);
   assert.equal(observed[1].repositoryTool, 'cmake');
-  assert.deepEqual(observed[1].args, ['--build', 'scratch/cmake-release', '--config', 'Release', '--target', 'all']);
+  assert.deepEqual(observed[1].args, ['--build', scratch, '--config', 'Release', '--target', 'all']);
   assert.equal(observed[2].repositoryTool, 'ctest');
-  assert.deepEqual(observed[2].args, ['--test-dir', 'scratch/cmake-release', '--output-on-failure', '-C', 'Release']);
+  assert.deepEqual(observed[2].args, ['--test-dir', scratch, '--output-on-failure', '-C', 'Release']);
   for (const entry of observed) {
     assert.equal(entry.executionClass, 'repository-code');
     assert.equal(entry.repository, 'owner/project');
     assert.equal(entry.runId, 'run-1');
     assert.equal(entry.args.some((arg) => typeof arg === 'string' && path.isAbsolute(arg)), false);
+    assert.equal(entry.args.some((arg) => typeof arg === 'string' && /(?:^|[\\/])scratch[\\/]/u.test(arg)), false);
   }
   assert.throws(() => registry.validate('cmake.configure', { buildId: 'x', arguments: ['--trace'] }), /parameter arguments is not allowed/u);
 });

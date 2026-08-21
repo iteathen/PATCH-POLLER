@@ -47,6 +47,14 @@ export class LeaseExecutionContext {
         if (handle) await guardActiveTaskLease();
         return result;
       },
+      cleanup: typeof delegate.cleanup === 'function'
+        ? async (request) => {
+            const handle = this.#active();
+            const result = await delegate.cleanup(handle ? { ...request, signal: handle.signal } : request);
+            if (handle) await guardActiveTaskLease();
+            return result;
+          }
+        : undefined,
       recoverResult: typeof delegate.recoverResult === 'function'
         ? async (request) => {
             const handle = this.#active();

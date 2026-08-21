@@ -159,6 +159,40 @@ export class ControllerPlanExecutor {
     }
   }
 
+  async #cleanupEnvironmentScratch(planState, workspace, persist) {
+    const entry = planState.environmentScratchCleanup;
+    if (!entry || entry.state === 'verified-absent') return;
+    if (!this.#processRunner || typeof this.#processRunner.cleanup !== 'function') {
+      throw new PolicyError('deterministic operation used environment scratch but no cleanup capability is available');
+    }
+    entry.state = 'cleanup-planned';
+    entry.attempts = (entry.attempts ?? 0) + 1;
+    entry.updatedAt = new Date().toISOString();
+    delete entry.reason;
+    await persist();
+    try {
+      const result = await this.#processRunner.cleanup({
+        executionClass: 'repository-code',
+        cwd: workspace.worktreeDir,
+        resource: 'scratch',
+      });
+      if (result?.state !== 'verified-absent' || result?.resource !== 'scratch' || typeof result?.removed !== 'boolean') {
+        throw new PolicyError('repository-code cleanup did not verify environment scratch absent');
+      }
+      entry.state = 'verified-absent';
+      entry.removed = result.removed;
+      entry.evidenceIdentity = result.evidence?.identity ?? null;
+      entry.updatedAt = new Date().toISOString();
+      await persist();
+    } catch (error) {
+      entry.state = 'failed';
+      entry.reason = String(error?.message ?? error).replace(/[\r\n]+/gu, ' ').slice(0, 1024);
+      entry.updatedAt = new Date().toISOString();
+      await persist();
+      throw error;
+    }
+  }
+
   async #verifyPersistentFiles(plan, planState, workspace, persist) {
     const persistentFiles = plan.files.filter((file) => file.scope === 'persistent');
     planState.phase = 'verifying-persistent-files';
@@ -314,6 +348,18 @@ export class ControllerPlanExecutor {
       await persist();
       for (const operation of plan.operations) {
         this.#registry.validate(operation.operation, operation.params);
+        const usesEnvironmentScratch = typeof this.#registry.usesEnvironmentScratch === 'function'
+          && this.#registry.usesEnvironmentScratch(operation.operation);
+        if (usesEnvironmentScratch) {
+          const existing = planState.environmentScratchCleanup;
+          planState.environmentScratchCleanup = {
+            resource: 'scratch',
+            state: 'planned',
+            attempts: existing?.attempts ?? 0,
+            updatedAt: new Date().toISOString(),
+          };
+          await persist();
+        }
         let record = planState.operations.find((entry) => entry.id === operation.id);
         if (!record) {
           record = { id: operation.id, operation: operation.operation, state: 'planned', attempts: 0 };
@@ -352,10 +398,17 @@ export class ControllerPlanExecutor {
     } finally {
       planState.phase = 'cleaning';
       await persist();
+      let environmentCleanupError = null;
+      try {
+        await this.#cleanupEnvironmentScratch(planState, workspace, persist);
+      } catch (error) {
+        environmentCleanupError = error;
+      }
       const scratchCleanup = await scratch.cleanup();
       planState.scratchCleanup = scratchCleanup;
       await persist();
       await this.#cleanup(state, workspace, persist);
+      if (environmentCleanupError) throw environmentCleanupError;
     }
 
     // Never trust the earlier applied state after executable operations. A
@@ -378,6 +431,7 @@ export class ControllerPlanExecutor {
       leftovers: planState.cleanupLedger.filter((entry) => entry.state !== 'verified-absent').map((entry) => entry.path),
       scratchVerifiedAbsent: planState.scratchCleanup?.verifiedAbsent ?? 0,
       scratchLeftovers: planState.scratchCleanup?.leftovers ?? [],
+      environmentScratchVerifiedAbsent: planState.environmentScratchCleanup?.state === 'verified-absent',
     };
     await persist();
     return {
@@ -390,7 +444,7 @@ export class ControllerPlanExecutor {
         timedOut: entry.result?.timedOut === true,
         outputTruncated: entry.result?.outputTruncated === true,
       })),
-      summary: `Controller plan completed ${planState.operations.length} deterministic operations and ${planState.assertionsPassed} assertions; reverified ${planState.persistentVerification.verified}/${planState.persistentVerification.required} persistent file proposals; cleanup verified ${planState.cleanup.verifiedAbsent}/${planState.cleanupLedger.length} ephemeral paths and ${planState.cleanup.scratchVerifiedAbsent}/${planState.scratchLedger.length} scratch directories absent.`,
+      summary: `Controller plan completed ${planState.operations.length} deterministic operations and ${planState.assertionsPassed} assertions; reverified ${planState.persistentVerification.verified}/${planState.persistentVerification.required} persistent file proposals; cleanup verified ${planState.cleanup.verifiedAbsent}/${planState.cleanupLedger.length} ephemeral paths and ${planState.cleanup.scratchVerifiedAbsent}/${planState.scratchLedger.length} host scratch directories absent; environment scratch ${planState.cleanup.environmentScratchVerifiedAbsent ? 'verified absent' : 'not used'}.`,
     };
   }
 }

@@ -3,6 +3,7 @@ import { PolicyError } from '../errors.js';
 import {
   REPOSITORY_EXECUTION_REQUEST_PROTOCOL,
   assertRepositoryExecutionContract,
+  normalizeRepositoryExecutionCleanupResult,
   normalizeRepositoryExecutionResult,
 } from './repository-execution.js';
 import { applyChildProcessPriority } from './process-priority.js';
@@ -38,6 +39,11 @@ function abortedError(signal) {
   return new PolicyError('deterministic operation aborted by the control plane');
 }
 
+function assertRepositoryScope(repository, runId) {
+  if (typeof repository !== 'string' || repository.length === 0) throw new PolicyError('repository-code execution requires repository identity');
+  if (typeof runId !== 'string' || runId.length === 0) throw new PolicyError('repository-code execution requires run identity');
+}
+
 export class DeterministicProcessRunner {
   #sourceEnv;
   #faults;
@@ -57,6 +63,28 @@ export class DeterministicProcessRunner {
     this.#repositoryExecution = repositoryExecution == null ? null : assertRepositoryExecutionContract(repositoryExecution);
     this.#processPriority = processPriority;
     this.#setPriority = setPriority;
+  }
+
+  async cleanup({
+    executionClass = 'repository-code',
+    repository = null,
+    repositoryId = null,
+    runId = null,
+    resource = 'scratch',
+    signal = null,
+  } = {}) {
+    if (signal?.aborted) throw abortedError(signal);
+    if (executionClass !== 'repository-code') throw new PolicyError('deterministic cleanup is only available for repository-code execution');
+    if (!this.#repositoryExecution) throw new PolicyError('repository-code cleanup is unavailable because no repository execution implementation is configured');
+    const status = this.#repositoryExecution.inspect();
+    if (status.ready !== true) throw new PolicyError(`repository-code cleanup is unavailable: ${status.reason ?? 'repository execution is not ready'}`);
+    assertRepositoryScope(repository, runId);
+    if (typeof this.#repositoryExecution.cleanup !== 'function') throw new PolicyError('repository-code cleanup is unavailable because the execution boundary does not provide cleanup');
+    return normalizeRepositoryExecutionCleanupResult(await this.#repositoryExecution.cleanup({
+      scope: { repository, repositoryId, runId },
+      resource,
+      signal,
+    }));
   }
 
   async run({
@@ -79,7 +107,7 @@ export class DeterministicProcessRunner {
     signal = null,
   }) {
     if (signal?.aborted) throw abortedError(signal);
-    if (!Array.isArray(args) || args.some((value) => typeof value !== 'string')) throw new PolicyError('deterministic operation args must be structural strings');
+    if (!Array.isArray(args)) throw new PolicyError('deterministic operation args must be an array');
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 28_800_000) throw new PolicyError('deterministic operation timeout is out of range');
     if (!Number.isInteger(maxOutputBytes) || maxOutputBytes < 1024 || maxOutputBytes > 16_777_216) throw new PolicyError('deterministic operation output limit is out of range');
     if (!Number.isInteger(activityIntervalMs) || activityIntervalMs < 10 || activityIntervalMs > 300_000) throw new PolicyError('deterministic activity interval is out of range');
@@ -89,8 +117,7 @@ export class DeterministicProcessRunner {
       if (!this.#repositoryExecution) throw new PolicyError('repository-code execution is unavailable because no repository execution implementation is configured');
       const status = this.#repositoryExecution.inspect();
       if (status.ready !== true) throw new PolicyError(`repository-code execution is unavailable: ${status.reason ?? 'repository execution is not ready'}`);
-      if (typeof repository !== 'string' || repository.length === 0) throw new PolicyError('repository-code execution requires repository identity');
-      if (typeof runId !== 'string' || runId.length === 0) throw new PolicyError('repository-code execution requires run identity');
+      assertRepositoryScope(repository, runId);
       if (typeof repositoryTool !== 'string' || repositoryTool.length === 0) throw new PolicyError('repository-code execution requires a logical repository tool identity');
       const result = normalizeRepositoryExecutionResult(await this.#repositoryExecution.execute({
         protocol: REPOSITORY_EXECUTION_REQUEST_PROTOCOL,
@@ -120,6 +147,7 @@ export class DeterministicProcessRunner {
       };
     }
 
+    if (args.some((value) => typeof value !== 'string')) throw new PolicyError('deterministic host operation args must be strings');
     if (typeof executable !== 'string' || executable.length === 0) throw new PolicyError('deterministic host operation executable is missing');
 
     const env = boundedEnvironment(this.#sourceEnv, environment.pass ?? [], environment.set ?? {});

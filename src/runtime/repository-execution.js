@@ -3,6 +3,7 @@ import { PolicyError } from '../errors.js';
 export const REPOSITORY_EXECUTION_REQUEST_PROTOCOL = 'devbridge/repository-execution-request-v1';
 export const REPOSITORY_EXECUTION_STATUS_PROTOCOL = 'devbridge/repository-execution-status-v1';
 export const REPOSITORY_EXECUTION_RESULT_PROTOCOL = 'devbridge/repository-execution-result-v1';
+export const REPOSITORY_EXECUTION_CLEANUP_RESULT_PROTOCOL = 'devbridge/repository-execution-cleanup-result-v1';
 
 const SAFE_OPERATION = /^[A-Za-z0-9_.:-]{1,160}$/u;
 const SAFE_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/u;
@@ -14,8 +15,9 @@ const MAX_STDIN_BYTES = 4 * 1024 * 1024;
 const MAX_TIMEOUT_MS = 28_800_000;
 const MAX_OUTPUT_BYTES = 16_777_216;
 const MAX_REASON_BYTES = 1_024;
-const ARGUMENT_KINDS = new Set(['literal', 'input', 'output']);
+const ARGUMENT_KINDS = new Set(['literal', 'input', 'output', 'scratch']);
 const TRANSFER_DIRECTIONS = new Set(['input', 'output']);
+const CLEANUP_RESOURCES = new Set(['scratch']);
 const RESERVED_ENVIRONMENT_NAMES = new Set([
   'GIT_ASKPASS', 'GIT_SSH', 'GIT_SSH_COMMAND', 'SSH_ASKPASS', 'SSH_AUTH_SOCK',
 ]);
@@ -168,7 +170,7 @@ function normalizeLimits(raw = {}) {
 function assertTransferArguments(invocation, transfers) {
   const byName = new Map(transfers.map((transfer) => [transfer.name, transfer]));
   for (const argument of invocation.arguments) {
-    if (argument.kind === 'literal') continue;
+    if (argument.kind === 'literal' || argument.kind === 'scratch') continue;
     const transfer = byName.get(argument.name);
     if (!transfer) throw new PolicyError(`repository execution argument references unknown transfer ${argument.name}`);
     if (transfer.direction !== argument.kind) {
@@ -205,6 +207,17 @@ export function normalizeRepositoryExecutionRequest(raw) {
     signal: request.signal ?? null,
     onActivity: request.onActivity ?? null,
   };
+}
+
+export function normalizeRepositoryExecutionCleanupRequest(raw) {
+  const request = requireObject(raw, 'repository execution cleanup request');
+  onlyKeys(request, new Set(['scope', 'resource', 'signal']), 'repository execution cleanup request');
+  const scope = normalizeScope(request.scope);
+  if (typeof request.resource !== 'string' || !CLEANUP_RESOURCES.has(request.resource)) {
+    throw new PolicyError('repository execution cleanup resource is invalid');
+  }
+  if (request.signal != null && typeof request.signal !== 'object') throw new PolicyError('repository execution cleanup signal is invalid');
+  return { scope, resource: request.resource, signal: request.signal ?? null };
 }
 
 function nullableBoundedString(value, name, { maxBytes = 8_192 } = {}) {
@@ -247,6 +260,25 @@ export function normalizeRepositoryExecutionResult(raw) {
   };
 }
 
+export function normalizeRepositoryExecutionCleanupResult(raw) {
+  const result = requireObject(raw, 'repository execution cleanup result');
+  onlyKeys(result, new Set(['protocol', 'resource', 'state', 'removed', 'evidence']), 'repository execution cleanup result');
+  if (result.protocol !== REPOSITORY_EXECUTION_CLEANUP_RESULT_PROTOCOL) throw new PolicyError('repository execution cleanup result protocol is unsupported');
+  if (typeof result.resource !== 'string' || !CLEANUP_RESOURCES.has(result.resource)) throw new PolicyError('repository execution cleanup result.resource is invalid');
+  if (result.state !== 'verified-absent') throw new PolicyError('repository execution cleanup result.state is invalid');
+  if (typeof result.removed !== 'boolean') throw new PolicyError('repository execution cleanup result.removed must be boolean');
+  const evidence = requireObject(result.evidence, 'repository execution cleanup result.evidence');
+  onlyKeys(evidence, new Set(['identity', 'scope']), 'repository execution cleanup result.evidence');
+  if (typeof evidence.identity !== 'string' || !SAFE_NAME.test(evidence.identity)) throw new PolicyError('repository execution cleanup result.evidence.identity is invalid');
+  return {
+    protocol: REPOSITORY_EXECUTION_CLEANUP_RESULT_PROTOCOL,
+    resource: result.resource,
+    state: result.state,
+    removed: result.removed,
+    evidence: { identity: evidence.identity, scope: normalizeScope(evidence.scope) },
+  };
+}
+
 export function unavailableRepositoryExecutionStatus(reason = null) {
   return Object.freeze({
     protocol: REPOSITORY_EXECUTION_STATUS_PROTOCOL,
@@ -281,12 +313,17 @@ export class UnavailableRepositoryExecution {
     normalizeRepositoryExecutionRequest(rawRequest);
     throw new PolicyError(`repository execution is unavailable: ${this.#status.reason}`);
   }
+  async cleanup(rawRequest) {
+    normalizeRepositoryExecutionCleanupRequest(rawRequest);
+    throw new PolicyError(`repository execution is unavailable: ${this.#status.reason}`);
+  }
 }
 
 export function assertRepositoryExecutionContract(value) {
   if (!value || typeof value.inspect !== 'function' || typeof value.execute !== 'function') {
     throw new TypeError('repository execution must provide inspect() and execute()');
   }
+  if (value.cleanup != null && typeof value.cleanup !== 'function') throw new TypeError('repository execution cleanup must be a function when present');
   normalizeRepositoryExecutionStatus(value.inspect());
   return value;
 }

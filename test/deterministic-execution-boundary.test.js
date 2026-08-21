@@ -56,8 +56,12 @@ test('fake repository executor attaches to deterministic flow through the same s
 
     await createCoreOperationRegistry().execute('cmake.configure', { sourcePath: 'CMakeLists.txt', buildId: 'b1' }, context);
     assert.equal(seen[1].invocation.tool, 'cmake');
-    const cmakeArgs = seen[1].invocation.arguments.map((a) => a.value);
-    assert.deepEqual(cmakeArgs.slice(0, 4), ['-S', '.', '-B', 'scratch/cmake-b1']);
-    assert.equal(cmakeArgs.some((arg) => path.isAbsolute(arg)), false);
+    assert.deepEqual(seen[1].invocation.arguments, [
+      { kind: 'literal', value: '-S' },
+      { kind: 'literal', value: '.' },
+      { kind: 'literal', value: '-B' },
+      { kind: 'scratch', name: 'cmake-b1' },
+    ]);
+    assert.equal(seen[1].invocation.arguments.some((arg) => arg.kind === 'literal' && /(?:^|[\\/])scratch[\\/]/u.test(arg.value)), false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
