@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -36,13 +36,36 @@ async function exchange(root, request) {
   });
 }
 
+async function safeJson(file) {
+  try { return JSON.parse(await readFile(file, 'utf8')); }
+  catch { return null; }
+}
+
+async function monitorLossDiagnostic(root, request) {
+  const directory = path.join(root, '.operations');
+  const operation = await safeJson(path.join(directory, `${request}.json`));
+  const claim = await safeJson(path.join(directory, `${request}.monitor.json`));
+  let names = [];
+  try { names = await readdir(directory); } catch {}
+  return {
+    request,
+    operationState: operation?.state ?? null,
+    monitorClaimState: claim?.state ?? null,
+    operationTempCount: names.filter((name) => name.startsWith(`${request}.json.`) && name.endsWith('.tmp')).length,
+    monitorTempCount: names.filter((name) => name.startsWith(`${request}.monitor.json.`) && name.endsWith('.tmp')).length,
+  };
+}
+
 async function observeUntil(root, request, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const observed = await exchange(root, frame(request, 'observe', {}));
     assert.equal(observed.ok, true);
     if (observed.body.state === 'completed' || observed.body.state === 'failed') return observed.body;
-    if (observed.body.state === 'indeterminate') throw new Error(`observation became indeterminate: ${observed.body.reason}`);
+    if (observed.body.state === 'indeterminate') {
+      const diagnostic = await monitorLossDiagnostic(root, request);
+      throw new Error(`observation became indeterminate: ${observed.body.reason}; diagnostic=${JSON.stringify(diagnostic)}`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   throw new Error(`operation ${request} did not become terminal`);
