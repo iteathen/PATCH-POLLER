@@ -1,0 +1,10 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { ZstdImageCodec } from '../src/runtime/zstd-image-codec.js';
+
+test('zstd adapter pins deterministic publication arguments and one-thread encoding', async () => { const root = await mkdtemp(path.join(os.tmpdir(), 'db-zstd-')); try { const calls = []; const run = async (executable, args, output) => { calls.push({ executable, args }); await writeFile(output, 'encoded'); }; const codec = new ZstdImageCodec({ executable: 'zstd-test', level: 9, version: 'zstd-1.5.7', run }); const input = path.join(root, 'input'); await writeFile(input, 'input'); await codec.encode({ source: input, destination: path.join(root, 'encoded') }); await codec.decode({ source: path.join(root, 'encoded'), destination: path.join(root, 'decoded'), algorithm: 'zstd' }); assert.deepEqual(await codec.describe(), { algorithm: 'zstd', parameters: { checksum: '1', level: '9', threads: '1', version: 'zstd-1.5.7' } }); assert.deepEqual(calls[0].args.slice(0, 5), ['--quiet', '--threads=1', '--check', '-9', '--stdout']); assert.deepEqual(calls[1].args.slice(0, 3), ['--quiet', '--decompress', '--stdout']); } finally { await rm(root, { recursive: true, force: true }); } });
+test('zstd adapter rejects another encoding algorithm before executing', async () => { let called = false; const codec = new ZstdImageCodec({ run: async () => { called = true; }, inspect: async () => 'v' }); await assert.rejects(() => codec.decode({ source: '/a', destination: '/b', algorithm: 'gzip' }), /another encoding/u); assert.equal(called, false); });
+test('zstd description probes the actual executable version when not pinned explicitly', async () => { let probed = null; const codec = new ZstdImageCodec({ inspect: async (executable) => { probed = executable; return 'zstd-cli-observed-v1'; } }); const description = await codec.describe(); assert.equal(probed, 'zstd'); assert.equal(description.parameters.version, 'zstd-cli-observed-v1'); });

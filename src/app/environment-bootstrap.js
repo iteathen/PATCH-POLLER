@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { createEnvironmentBridge } from './environment-bridge.js';
 import { createEnvironmentFoundation } from './environment-foundation.js';
@@ -7,6 +6,8 @@ import { invokeCommand } from '../runtime/command-invocation.js';
 import { loadOrCreateLocalIdentity } from '../runtime/local-identity.js';
 import { HyperVEnvironmentBootstrap } from '../runtime/providers/hyperv-environment-bootstrap.js';
 import { LibvirtEnvironmentBootstrap } from '../runtime/providers/libvirt-environment-bootstrap.js';
+import { createHyperVEnvironmentLocation } from '../runtime/providers/hyperv-environment-location.js';
+import { createLibvirtEnvironmentLocation } from '../runtime/providers/libvirt-environment-location.js';
 
 const DEFAULT_REQUIREMENTS = Object.freeze([
   'source-control',
@@ -23,40 +24,6 @@ const DEFAULT_PROTECTED_NAMES = Object.freeze([
   'DEVBRIDGE_GITHUB_TOKEN', 'DEVBRIDGE_COORDINATION_PRIVATE_KEY',
   'DEVBRIDGE_RELEASE_PRIVATE_KEY', 'DEVBRIDGE_SIGNING_KEY',
 ]);
-
-function environmentReference(identity, target) {
-  return `db-env-${createHash('sha256').update(`${identity}:persistent:${target}`).digest('hex').slice(0, 16)}`;
-}
-
-function environmentProof(identity, target) {
-  return `devbridge-owned:${identity}:persistent:${target}:v1`;
-}
-
-function environmentIdentity(identity, target) {
-  const hex = createHash('sha256').update(`${identity}:persistent:${target}`).digest('hex').slice(0, 32).split('');
-  hex[12] = '4';
-  hex[16] = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
-  const value = hex.join('');
-  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
-}
-
-function networkReference(identity) {
-  return `db-network-${createHash('sha256').update(`${identity}:network:`).digest('hex').slice(0, 16)}`;
-}
-
-function hypervNetworkProof(identity) {
-  return `devbridge-owned:${identity}:network:default:v1`;
-}
-
-function libvirtNetworkProof(identity) {
-  return `devbridge-owned:${identity}:network:v1`;
-}
-
-function hypervPrefix(identity) {
-  const digest = createHash('sha256').update(`${identity}:network`).digest();
-  const third = 64 + (digest[0] % 128);
-  return { prefix: `192.168.${third}.0/24`, gateway: `192.168.${third}.1` };
-}
 
 function running(state) {
   return ['running', 'blocked'].includes(String(state ?? '').toLowerCase());
@@ -81,46 +48,51 @@ export async function createEnvironmentBootstrap({
   platform = process.platform,
   invoke = invokeCommand,
   access,
+  prepareAccess = null,
   requirements = DEFAULT_REQUIREMENTS,
   protectedNames = DEFAULT_PROTECTED_NAMES,
   revision = 'stage5-base-v1',
 } = {}) {
   if (typeof stateDirectory !== 'string' || stateDirectory.length === 0) throw new TypeError('stateDirectory is required');
   if (typeof access !== 'function') throw new TypeError('bootstrap access must be a function');
+  if (prepareAccess != null && typeof prepareAccess !== 'function') throw new TypeError('bootstrap access preparation must be a function');
   if (!Array.isArray(requirements) || !Array.isArray(protectedNames)) throw new TypeError('bootstrap policy lists are invalid');
   const root = path.join(path.resolve(stateDirectory), 'environment-foundation');
   const identity = await loadOrCreateLocalIdentity({ directory: root });
   const foundation = await createEnvironmentFoundation({ stateDirectory, platform, invoke });
+  const providerLocation = platform === 'win32'
+    ? createHyperVEnvironmentLocation(identity)
+    : platform === 'linux'
+      ? createLibvirtEnvironmentLocation(identity)
+      : null;
+  if (!providerLocation) throw new Error('no bootstrap attachment is available for this host platform');
 
   const baseAccess = async (target) => access(target);
   const location = async (target) => {
     const selected = await baseAccess(target);
     if (!selected || !['windows', 'linux'].includes(selected.family)) throw new TypeError('bootstrap access family is invalid');
-    const common = {
-      reference: environmentReference(identity, target),
-      proof: environmentProof(identity, target),
+    return {
+      ...providerLocation.environment(target),
       family: selected.family,
+      network: providerLocation.network(),
     };
-    if (platform === 'win32') {
-      return { ...common, network: { reference: networkReference(identity), proof: hypervNetworkProof(identity), ...hypervPrefix(identity) } };
-    }
-    if (platform === 'linux') {
-      return { ...common, identity: environmentIdentity(identity, target), network: { reference: networkReference(identity), proof: libvirtNetworkProof(identity) } };
-    }
-    throw new Error('no bootstrap attachment is available for this host platform');
   };
 
   let attachment;
   if (platform === 'win32') {
     attachment = new HyperVEnvironmentBootstrap({ directory: path.join(root, 'bootstrap', 'attachment'), invoke, locate: location, connection: baseAccess });
-  } else if (platform === 'linux') {
-    attachment = new LibvirtEnvironmentBootstrap({ directory: path.join(root, 'bootstrap', 'attachment'), invoke, locate: location, connection: baseAccess });
   } else {
-    throw new Error('no bootstrap attachment is available for this host platform');
+    attachment = new LibvirtEnvironmentBootstrap({ directory: path.join(root, 'bootstrap', 'attachment'), invoke, locate: location, connection: baseAccess });
   }
 
   const resolvedAccess = async (target) => attachment.connection(target);
   const bridge = await createEnvironmentBridge({ stateDirectory, platform, invoke, access: resolvedAccess });
+
+  const prepareResolvedAccess = async (target) => {
+    if (!prepareAccess) return;
+    const result = await prepareAccess(Object.freeze({ target, access: await resolvedAccess(target) }));
+    if (!result || result.ready !== true) throw new Error('bootstrap access preparation did not become ready');
+  };
 
   const waitForBridge = async (target) => {
     const deadline = Date.now() + 90_000;
@@ -154,6 +126,7 @@ export async function createEnvironmentBootstrap({
       await foundation.startEnvironment(target);
     }
     await attachment.activate(target);
+    await prepareResolvedAccess(target);
     await waitForBridge(target);
   };
 
@@ -196,6 +169,7 @@ export async function createEnvironmentBootstrap({
     if (running(current.observation?.state)) await foundation.stopEnvironment(target, { force: false, timeoutMs: 60_000 });
     await foundation.startEnvironment(target);
     await attachment.activate(target);
+    await prepareResolvedAccess(target);
     await waitForBridge(target);
   };
 

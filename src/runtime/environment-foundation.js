@@ -185,6 +185,7 @@ export class EnvironmentFoundation {
   }
 
   async listImages() { return this.#images.list(); }
+  async observeImage(identity) { return this.#images.observe(identity); }
 
   async verifyImage(identity) {
     const observed = await this.#images.verify(identity);
