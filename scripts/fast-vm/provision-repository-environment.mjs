@@ -6,6 +6,10 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createEnvironmentBridge } from '../../src/app/environment-bridge.js';
 import { createEnvironmentFoundation } from '../../src/app/environment-foundation.js';
+import {
+  executionProfileSubject,
+  executionWorkspaceIdentity,
+} from '../../src/app/execution-profile-routing.js';
 import { createFastVmTopology } from '../../src/app/fast-vm-repository-execution.js';
 import {
   ENVIRONMENT_EXECUTION_ROUTES_PROTOCOL,
@@ -101,7 +105,7 @@ async function upsertRoutePolicy(file, route) {
   }
 }
 
-export async function provisionRepositoryEnvironment({
+export async function provisionExecutionProfileWorkspace({
   stateDirectory,
   identityFile,
   sourceKnownHostsFile,
@@ -116,14 +120,16 @@ export async function provisionRepositoryEnvironment({
   const localIdentityFile = path.resolve(identityFile);
   const localSourceKnownHostsFile = path.resolve(sourceKnownHostsFile);
   const localKnownHostsFile = path.resolve(knownHostsFile);
-  if (!/^\d+$/u.test(subject)) throw new Error('repository subject must be a numeric immutable identity');
+  if (!/^\d+$/u.test(subject)) throw new Error('workspace subject must be a numeric immutable identity');
   if (!/^img-[a-f0-9]{32}$/u.test(sourceIdentity)) throw new Error('source identity is invalid');
 
+  const profileSubject = executionProfileSubject(profile);
+  const workspaceIdentity = executionWorkspaceIdentity(subject, profile);
   const foundation = await createEnvironmentFoundation({ stateDirectory: localStateDirectory });
   const storage = await foundation.ensureStorage();
   if (storage.ready !== true) throw new Error('owned environment storage did not become ready');
   const environment = await foundation.ensureEnvironment({
-    subject,
+    subject: profileSubject,
     profile,
     sourceIdentity,
     settings: { memoryBytes, processorCount, firmware: 'efi' },
@@ -164,7 +170,15 @@ export async function provisionRepositoryEnvironment({
   return {
     networking: { ready: true, mode: 'fast-default-switch' },
     storage,
-    environment: observed,
+    profile: {
+      id: profile,
+      subject: profileSubject,
+      environment: observed,
+    },
+    workspace: {
+      subject,
+      identity: workspaceIdentity,
+    },
     connection,
     knownHosts: { file: localKnownHostsFile, state: knownHostsState },
     routes: { file: routesFile, state: routesState },
@@ -173,9 +187,14 @@ export async function provisionRepositoryEnvironment({
   };
 }
 
+// Compatibility export for the Stage-8 caller while the setup vocabulary migrates.
+// The operation now provisions a profile VM plus one workspace route; it never
+// derives VM identity from the repository subject.
+export const provisionRepositoryEnvironment = provisionExecutionProfileWorkspace;
+
 const invokedPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : null;
 if (invokedPath === import.meta.url) {
-  provisionRepositoryEnvironment({
+  provisionExecutionProfileWorkspace({
     stateDirectory: argument('--state-directory'),
     identityFile: argument('--identity-file'),
     sourceKnownHostsFile: argument('--source-known-hosts-file'),

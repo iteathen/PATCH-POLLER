@@ -1,6 +1,8 @@
 # VM Stage 3 — persistent environment lifecycle
 
-Status: Stage 3 implementation contract.
+Status: historical Stage 3 implementation contract; repository-owned VM identity is superseded by the execution-profile correction in `docs/execution-profile-environments.md` and issue #138.
+
+Stage 3 remains implementation evidence for provider-native persistent lifecycle, lineage, reset/reseed, and recovery mechanics. Its original use of repository identity as the persistent VM owner is no longer the target architecture. Future work must preserve the neutral provider/lifecycle mechanics where useful while moving VM ownership to execution profiles and repository persistence to isolated workspaces inside compatible profile VMs.
 
 This stage adds persistent, resettable guest-machine state on top of the Stage 2 provider/image foundation while repository-controlled task execution remains intentionally unavailable until Stage 6.
 
@@ -56,7 +58,7 @@ Each provider keeps its own private ownership/lineage record containing only pro
 
 The Windows adapter creates one derived writable VHD/VHDX with `New-VHD -ParentPath ... -Differencing` and verifies the exact parent through `Test-VHD`/`Get-VHD`.
 
-It creates one owned VM whose name, ownership marker, configuration location, disk location, and recorded Hyper-V VM identity are derived or captured locally. Automatic checkpoints are disabled so hidden AVHDX/checkpoint chains cannot silently change the one-parent lineage. VM start/stop/remove operations re-check provider identity and ownership before mutation. Graceful stop uses the supported parameterless `Stop-VM -Name ...` shutdown form; `-TurnOff` remains limited to an explicit forced operation. Hyper-V does not define a `-Shutdown` switch.
+It creates one owned VM whose name, ownership marker, configuration location, disk location, and recorded Hyper-V VM identity are derived or captured locally. Automatic checkpoints are disabled so hidden AVHDX/checkpoint chains cannot silently change the one-parent lineage. VM start/stop/remove operations re-check provider identity and ownership before mutation.
 
 A crash after `New-VM` but before ownership metadata is written is recoverable only when the partial VM has no foreign marker and is already attached to the exact pre-recorded writable disk. A differently owned object is never adopted.
 

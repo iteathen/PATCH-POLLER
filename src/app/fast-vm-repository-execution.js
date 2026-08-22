@@ -3,9 +3,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createEnvironmentBridge } from './environment-bridge.js';
 import { createEnvironmentFoundation } from './environment-foundation.js';
+import { createExecutionProfileRepositoryExecution } from './execution-profile-routing.js';
 import { createFastPersistentEnvironmentChannel } from './fast-persistent-environment-channel.js';
-import { createRepositoryExecution } from './repository-execution.js';
 import { invokeCommand } from '../runtime/command-invocation.js';
+import { ExecutionProfileResourceError } from '../runtime/profile-resource-preflight.js';
 
 const TARGET = /^env-[a-f0-9]{32}$/u;
 const PROVIDER_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/iu;
@@ -24,8 +25,28 @@ function encodeScript(value) {
   return Buffer.from(`$ProgressPreference = 'SilentlyContinue'\n${value}`, 'utf16le').toString('base64');
 }
 
+function structuredResourceFailure(result) {
+  const text = String(result?.stdout ?? '').trim();
+  if (!text) return null;
+  try {
+    const value = JSON.parse(text);
+    if (value?.error !== 'PROFILE_RESOURCES_UNAVAILABLE') return null;
+    return new ExecutionProfileResourceError({
+      resource: String(value.resource ?? 'memory'),
+      requestedBytes: Number(value.requestedBytes),
+      availableBytes: Number(value.availableBytes),
+      reserveBytes: Number(value.reserveBytes),
+    });
+  } catch (error) {
+    if (error instanceof ExecutionProfileResourceError) return error;
+    return null;
+  }
+}
+
 function parseResult(result) {
   if (!result || result.exitCode !== 0 || result.timedOut || result.aborted || result.outputTruncated) {
+    const resourceFailure = structuredResourceFailure(result);
+    if (resourceFailure) throw resourceFailure;
     const detail = result?.stderr?.trim() || result?.stdout?.trim() || 'fast VM topology operation failed';
     throw new Error(detail.slice(-2_048));
   }
@@ -54,6 +75,20 @@ if ($null -eq $copy) { throw 'fast VM guest file service is unavailable' }
 if (-not $copy.Enabled) { Enable-VMIntegrationService -VMIntegrationService $copy -ErrorAction Stop | Out-Null }
 $state = [string]$item.State
 if ($state -eq 'Off' -or $state -eq 'Saved') {
+  $startupBytes = [long]$item.MemoryStartup
+  $hostState = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+  $availableBytes = [long]$hostState.FreePhysicalMemory * 1024
+  $reserveBytes = [long][Math]::Max(536870912, [Math]::Ceiling($startupBytes / 4.0))
+  if ($availableBytes -lt ($startupBytes + $reserveBytes)) {
+    @{
+      error = 'PROFILE_RESOURCES_UNAVAILABLE'
+      resource = 'memory'
+      requestedBytes = $startupBytes
+      availableBytes = $availableBytes
+      reserveBytes = $reserveBytes
+    } | ConvertTo-Json -Compress
+    exit 23
+  }
   Start-VM -Name ([string]$data.name) -ErrorAction Stop | Out-Null
 } elseif ($state -eq 'Paused') {
   Resume-VM -Name ([string]$data.name) -ErrorAction Stop | Out-Null
@@ -168,6 +203,7 @@ export function createFastVmTopology({
         last = new Error('fast VM has no address on the selected host switch network');
       } catch (error) {
         last = error;
+        if (error instanceof ExecutionProfileResourceError) throw error;
       }
       await new Promise((resolve) => setTimeout(resolve, 1_000));
     } while (Date.now() < deadline);
@@ -206,5 +242,5 @@ export async function createFastVmRepositoryExecution(options = {}) {
       prepare: (target) => bridge.put(target, bufferPort(agentBytes), FAST_AGENT_LOCATION, { maxBytes: agentBytes.length }),
     });
   };
-  return createRepositoryExecution({ ...options, createState, createPreparation, createChannel });
+  return createExecutionProfileRepositoryExecution({ ...options, createState, createPreparation, createChannel });
 }

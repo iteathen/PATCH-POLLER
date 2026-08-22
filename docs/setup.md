@@ -1,56 +1,51 @@
 # DevBridge setup
 
-## Disposable fast-track VM branch
+DevBridge is installed from one standalone stage-0 launcher and keeps its managed runtime current through the secure supervisor.
 
-The `codex/temp-fast-functional` branch uses one persistent Ubuntu Hyper-V environment per admitted repository identity through the Stage 6 source/operation/candidate contract. Run `npm run fast:doctor`, `npm run fast:run`, or `npm run fast:daemon` from that branch. The fast configuration explicitly selects the VMs attached to Hyper-V's existing `Default Switch`; it does not silently fall back to the host when a VM is unavailable.
+## Current execution architecture
 
-Normal build, test, and repository work is headless. DevBridge keeps the VM running during active use and can resume a saved or paused environment without VMConnect. `scripts/fast-vm/manage-environment.ps1` provides exact-owned-target `Status`, `Save`, and `Resume` actions; `Show` is the explicit diagnostic action that opens a console.
+DB-020 and `docs/execution-profile-environments.md` define the active repository-execution topology:
 
-The disposable unattended Ubuntu installer has also been proven end to end without VMConnect: a fresh owned VM installed, powered itself off, booted from disk, and exposed the expected development toolchain and guest services. This is fast-track evidence, not yet the supported Stage 8 install/re-entry interface. Fresh guests generate unique SSH host keys; the production installer still needs an authenticated, environment-bound enrollment channel instead of the probe-only trust-on-first-use shortcut.
+> **Execution profiles own persistent VMs. Repositories own isolated workspaces inside compatible execution-profile VMs.**
 
-Controller-submitted file changes and locally registered deterministic build/test operations are the normal path. The `codex-fast` adapter is available but has no default fallback: it runs only when a remote task explicitly requests it, or after an operator deliberately sets `execution.defaultTool` as a local opt-in.
+Repository selection and VM provisioning are therefore separate concerns. Discovering or selecting ten repositories does not imply ten VMs. If those repositories all use the same compatible profile, setup provisions or reuses one profile VM and registers ten workspace routes inside it.
 
-This branch still contains an intentionally temporary direct-host implementation, but `execution.fastHost` is disabled and configuration rejects enabling it with the VM topology. That implementation and the Default Switch/network/host-key shortcuts are not intended for `main`. See `docs/fast-track-field-notes.md` for exact evidence and the production problems each shortcut exposes.
-
-DevBridge is installed from one standalone stage-0 launcher and then keeps its managed runtime current through the secure supervisor.
-
-## Current implementation versus VM target
-
-DB-020 defines the target repository-execution architecture: a trusted DevBridge controller on the host plus persistent, networked repository VMs.
-
-The required initial host providers are:
+The required initial host providers remain:
 
 - **Windows:** Hyper-V;
 - **Linux:** KVM/QEMU managed through libvirt.
 
-Stages 0–6 of that VM path are implemented on the migration stack. Stage 1 removed the old host-sandbox path; Stages 2–5 provide foundation, persistent environments, bridge, and guest preparation; Stage 6 restores routed repository execution.
+Provider/image readiness is distinct from profile-environment readiness, and profile readiness is distinct from repository-workspace routing readiness. DevBridge never infers repository execution readiness merely because Hyper-V, `/dev/kvm`, `virsh`, a VM/domain name, or a repository route exists.
 
-The migration stack behaves as follows:
+Repository-controlled and candidate-controlled execution remains fail-closed when a compatible profile environment is unavailable. There is no direct/uncontained host fallback.
 
-- repository-controlled and candidate-controlled execution uses only locally admitted ready persistent VM routes and otherwise remains fail-closed on both Windows and Linux;
-- Windows `doctor` can observe the Stage-2 Hyper-V management/image/network/storage foundation;
-- Linux `doctor` can observe the Stage-2 KVM/QEMU/libvirt management/image/network/storage foundation;
-- provider/image readiness is reported separately from repository-execution readiness;
-- Draft PR #106's Windows ProcessContainer/AppContainer work is superseded migration evidence and is not the supported target.
+## Fast-track integration branch
 
-The completed Stages 3–5 interval kept execution unavailable. Stage 6 restores it through persistent VMs only. Do not introduce direct/uncontained host execution as compatibility behavior.
+The `codex/temp-fast-functional` integration line originally created one persistent Ubuntu Hyper-V VM per admitted repository. Issue #138 corrects that topology.
 
-Stage 2 does not add installer mutation UX. Do not manually configure provider objects and assume DevBridge owns them merely because `doctor` can observe the host. VM Stage 8 (#116), coordinated with setup/reconfiguration issue #103, owns supported discovery/provisioning/re-entry after the lower VM stages are implemented and qualified.
+On the corrected branch:
+
+- the `linux-development` execution profile owns one persistent VM;
+- each admitted repository receives a deterministic workspace identity inside that VM;
+- normal bridge `input`, `work`, `output`, `scratch`, and `cache` locations are scoped beneath that workspace identity;
+- selecting `all` repositories adds workspace routes but does not fan out VM creation/start;
+- legacy repository-owned VMs remain migration candidates and are not silently adopted as the shared profile VM;
+- provider allocation performs profile-level resource preflight before VM provisioning.
+
+The fast branch still contains temporary integration shortcuts such as Hyper-V `Default Switch` use and probe-oriented guest enrollment. Those are not the production Stage-8 contract. The temporary direct-host implementation remains disabled and must not become a fallback.
 
 ## Current requirements
 
-Current main requires:
+The managed runtime requires:
 
-- Node.js 22.16.0 or newer
-- Git
-- a GitHub account with access to the configured task queue and target repositories
+- Node.js 22.16.0 or newer;
+- Git;
+- a GitHub account with access to configured task queues and target repositories.
 
-Stage-2 host-foundation requirements are provider-specific when those capabilities are expected to be ready:
+When VM execution is expected:
 
-- Windows requires a usable Hyper-V configuration and DevBridge management authority.
-- Linux requires usable KVM acceleration plus the QEMU/libvirt management path, normally a locally authorized `qemu:///system` provider.
-
-Setup must not infer VM readiness merely from Hyper-V being installed, `/dev/kvm` existing, `virsh` being present, or a VM/domain name existing.
+- Windows requires usable Hyper-V plus DevBridge management authority;
+- Linux requires usable KVM acceleration plus QEMU/libvirt access, normally through a locally authorized `qemu:///system` provider.
 
 ## Fresh install
 
@@ -66,11 +61,9 @@ mkdir -p "$HOME/.devbridge/bin" && curl -fsSL https://raw.githubusercontent.com/
 New-Item -ItemType Directory -Force "$HOME\.devbridge\bin" | Out-Null; Invoke-WebRequest "https://raw.githubusercontent.com/iteathen/DevBridge/codex/temp-fast-functional/devbridge.mjs" -OutFile "$HOME\.devbridge\bin\devbridge.mjs"; node "$HOME\.devbridge\bin\devbridge.mjs"
 ```
 
-The launcher uses only Node.js built-ins and local Git to establish/verify the fixed managed DevBridge runtime. The managed bootstrap then enters CLI setup. It discovers authenticated repositories before presenting repository choices, presents collaborator identities only as untrusted task-author candidates, and separately asks which ready/provisionable repository environments and execution policy to use.
+The launcher uses Node.js built-ins and local Git to establish/verify the managed runtime. Fresh setup discovers authenticated repositories before asking the operator to type identities that are already knowable.
 
-The no-command default is a windowless/headless start. On a fresh home it performs setup first. After a successful setup, ordinary launches are locked out of setup; re-enter it only with `setup` or `--setup`.
-
-Useful commands:
+Useful commands include:
 
 ```text
 node ~/.devbridge/bin/devbridge.mjs setup
@@ -85,7 +78,51 @@ node ~/.devbridge/bin/devbridge.mjs stop
 
 PowerShell users can use `$HOME\.devbridge\bin\devbridge.mjs` in the same commands.
 
-For a noninteractive/prescribed setup, supply local choices explicitly:
+## Discover-first setup
+
+The setup rule is:
+
+**Discover first, suggest second, prompt only for unresolved choices or explicit consent.**
+
+Discovery may observe:
+
+- authenticated GitHub identity;
+- accessible repository candidates and immutable repository IDs;
+- task-author candidates;
+- host provider capability;
+- DevBridge-owned image generations;
+- existing execution-profile environments;
+- repository workspace routes;
+- guest/bootstrap/bridge readiness;
+- resource/storage state;
+- locally available tools/capabilities.
+
+Discovery is observation, not authority. A discovered repository, tool, provider, profile, or credential path is not automatically approved/enabled.
+
+## Execution profiles versus repository workspaces
+
+Setup presents execution profiles separately from repository workspaces.
+
+A representative interactive view is:
+
+```text
+Execution profiles:
+  linux-development: ready (env-..., running)
+
+Repository workspace options:
+  1. owner/one: ready in linux-development (workspace-...)
+  2. owner/two: can register workspace in linux-development
+  3. owner/three: can register workspace in linux-development
+
+Repository workspace selections (numbers, all, none, or owner/name) [none]: all
+Enable repository execution for selected workspaces (yes) [yes]:
+```
+
+Here `all` means **all selected repository workspaces**, not one VM per repository.
+
+The current CLI retains `--environment`, `--all-environments`, and `--no-environments` as compatibility spellings while this setup surface migrates; their corrected semantics are workspace selection against compatible execution profiles. They must not be interpreted as repository-owned VM requests.
+
+A prescribed setup may use:
 
 ```text
 node ~/.devbridge/bin/devbridge.mjs setup \
@@ -97,21 +134,35 @@ node ~/.devbridge/bin/devbridge.mjs setup \
   --confirm APPLY
 ```
 
-Use `--no-environments --disable-execution` for a polling-only installation. Repository execution never falls back to the host when an environment cannot be prepared or verified.
+`--all-environments` in this compatibility interface selects all eligible repository workspaces; it does not multiply VM count.
 
-On Windows, selected VM setup may discover that ordinary Hyper-V management works while the exact DevBridge-owned internal switch gateway and WinNAT are absent. Interactive setup then warns about the exact bounded action and requires the operator to type `ELEVATE` before Windows displays its separate UAC consent prompt. Prescribed setup must supply both `--allow-provider-elevation` and exact `--confirm APPLY`. Only `environment-foundation.ensure-network` runs in the hidden elevated helper; the daemon, repository commands, GitHub authority, and normal runtime remain unelevated.
+Use `--no-environments --disable-execution` for a polling-only installation.
 
-The helper accepts no PowerShell, switch name, prefix, provider object, or host path from a repository/task/controller. It binds a versioned request digest to the existing local foundation identity, derives the owned switch/gateway/NAT inside the Hyper-V adapter, writes a subject-bound result, and then the unelevated setup process independently re-inspects the exact network. Planned/launched state is durable under `environment-foundation/setup-elevation`; setup re-entry observes the provider before considering a retry. UAC denial, result mismatch, or indeterminate interruption fails closed and cannot enable execution.
+## Profile creation and resource preflight
 
-This is a bounded Windows network-prerequisite repair, not a claim that VM Stage 8 is complete. It deliberately refuses to use elevation as a substitute when the ordinary DevBridge account cannot manage Hyper-V. Feature installation, service repair, group/session changes, reboot, image acquisition, authenticated guest enrollment, and the first-class Linux installer remain Stage-8 work.
+A profile is created only when selected repositories/tasks actually require it and no compatible ready profile environment exists.
 
-Interactive setup accepts repository option numbers, `all`, and custom `owner/name` identities separated by spaces or commas. Trusted-author selection accepts option numbers, `self`, discovered logins, custom GitHub logins, and `id:<numeric-id>`. Custom repositories/logins/IDs are queried through the authenticated GitHub API and rejected unless GitHub returns the same canonical identity. Invalid input returns to the same prompt. Before policy is written, setup displays the verified repositories and immutable actor IDs, warns about remote job-submission authority, and requires exact `APPLY`; scripted repository/task-author changes require `--confirm APPLY`.
+Before provider VM provisioning, DevBridge performs host resource preflight. Memory is evaluated once per profile environment, not once per repository. Insufficient startup memory is reported as a typed profile resource failure (`ExecutionProfileResourceError`, code `PROFILE_RESOURCES_UNAVAILABLE`) rather than as an opaque repository failure or a late Hyper-V/libvirt allocation error.
 
-## Removed host-sandbox prerequisite
+Storage, provider, image, networking, bridge, and tool prerequisites remain separately observable. Partial readiness must not be collapsed into a generic `ready` state.
 
-Bubblewrap is no longer an active repository-execution prerequisite. Stage 1 removed the host-sandbox execution implementation and Stage 2 does not reintroduce it.
+## Windows bounded elevation
 
-Historical sandbox documentation remains evidence only. From Stage 1 until Stage 6, repository execution is unavailable rather than falling back to Bubblewrap or the direct host.
+On Windows, setup may discover that ordinary Hyper-V management works while an exact DevBridge-owned network prerequisite is absent.
+
+Interactive setup must warn about the exact bounded action and require explicit local consent before UAC. Prescribed setup requires `--allow-provider-elevation` plus exact `--confirm APPLY`.
+
+Elevation is limited to the locally defined provider/network operation. Repository content, task text, model output, and remote input cannot supply PowerShell, provider object names, host paths, or arbitrary elevated commands.
+
+UAC denial, result mismatch, or ambiguous interruption fails closed and cannot enable repository execution.
+
+## Repository and task-author authority
+
+Interactive setup supports repository option numbers, `all`, and explicit `owner/name` identities. Custom repositories are verified against the authenticated GitHub API and immutable IDs before configuration.
+
+Trusted task-author selection is independent of repository/workspace/profile selection. Before authority-bearing policy is written, setup shows the verified repositories and immutable actor IDs and requires explicit confirmation.
+
+Repository selection grants polling/workspace-routing authority under local policy. It does not grant VM-management authority to repository content.
 
 ## Configuration authority
 
@@ -121,179 +172,101 @@ The canonical checked-in example is:
 config/devbridge.example.json
 ```
 
-Fresh configuration keeps execution, model adapters, coordination, dynamic tool onboarding, and automatic task-branch publication conservative/off by default.
-
 Review at least:
 
-- `github.queueRepositories`
-- `github.repositoryDiscovery`
-- `github.trustedActorIds`
-- `workspace.allowedOwners`
-- `workspace.baselineChannels`
-- `execution.*`
-- `execution.decisionAuthorities`
-- `coordination.*`
-- `publication.*`
+- `github.queueRepositories`;
+- `github.repositoryDiscovery`;
+- `github.trustedActorIds`;
+- `workspace.allowedOwners`;
+- `workspace.baselineChannels`;
+- `execution.*`;
+- `execution.decisionAuthorities`;
+- `coordination.*`;
+- `publication.*`;
 - local tool profiles/credentials.
 
-`workspace.externalReadRoots`, proposal profile `sandbox.*`, and `execution.allowUncontainedTools` are host-sandbox-era surface. Stage 1 removes their ability to authorize repository-code host execution. Stage 8 defines deliberate operator-facing migration/deprecation, and Stage 9 removes remaining compatibility where appropriate.
+Host-sandbox-era fields such as `workspace.externalReadRoots`, proposal `sandbox.*`, and `execution.allowUncontainedTools` must never authorize repository-code host execution.
 
-`execution.allowUncontainedTools` or equivalent must never bypass the no-provider state.
-
-Ordinary self-update does not rewrite operator policy. This disposable branch contains one bounded bootstrap migration from the former singular `github.queueRepository` key to plural `github.queueRepositories`, with an exact pre-migration backup. All later policy changes require first-run setup or an explicit `setup` invocation.
-
-## Execution remains opt-in and provider-bound
-
-Setting `execution.enabled` is local machine authority. Task text cannot enable it.
-
-Current pre-migration main fails closed if a requested repository-code execution class lacks the provider it actually implements/verifies.
-
-Stage 6 VM-backed execution requires observed provider + image + repository environment + bridge readiness plus a local stable-identity route, even if `execution.enabled` is configured. If any are missing, execution remains unavailable; it never redirects to direct host execution.
-
-## GitHub authentication
-
-GitHub credentials are host control-plane authority under DB-003/DB-008.
-
-DevBridge may use configured environment-variable providers or the current GitHub CLI credential for the configured hostname. Token values are not serialized into config/status/run state and are not forwarded to repository execution.
-
-Under DB-020 repository guests normally have network access, so host GitHub/SSH/publication credentials must remain absent from the guest. Private dependency/coding-service support requires explicit later scoped mechanisms rather than copying the host token into a persistent VM.
+Ordinary self-update does not silently broaden operator policy.
 
 ## Multiple repository queues
 
-`github.queueRepositories` is the explicit local queue allowlist. DevBridge polls each selected queue through its own isolated runtime and state namespace while sharing one serialized GitHub client/rate budget. Effective task execution remains one task at a time. Issue numbers are always reported with their queue repository so identically numbered issues cannot collide.
+`github.queueRepositories` is the explicit local queue allowlist. Multiple queues can share a compatible execution profile while retaining separate repository/workspace/run identity.
 
-Authenticated discovery is separate local policy:
+Authenticated repository discovery never by itself:
 
-```json
-{
-  "github": {
-    "queueRepositories": ["owner/control", "owner/project"],
-    "repositoryDiscovery": {
-      "enabled": false,
-      "affiliations": ["owner", "collaborator", "organization_member"],
-      "maxRepositories": 30
-    }
-  }
-}
-```
+- adds trusted task actors;
+- enables execution;
+- creates a profile VM;
+- adopts a provider object;
+- grants publication authority;
+- supplies guest credentials.
 
-When explicitly enabled, discovery uses GitHub's authenticated-user repository endpoint with conditional requests, a local owner allowlist, a hard result bound, and filters for active repositories with issues enabled. Configured repositories remain selected even when discovery has no matching result. The response reports when GitHub pagination indicates that the configured bound truncated discovery. See GitHub's [authenticated repository endpoint](https://docs.github.com/en/rest/repos/repos#list-repositories-for-the-authenticated-user) and [REST API best practices](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api).
+Each selected repository still requires a stable repository identity and an admitted compatible workspace route before execution. A broken route for one repository need not invalidate otherwise usable queues/profile routes.
 
-Token access is observation, not execution authority. Discovery never adds trusted task actors, enables execution, creates a VM, adopts a provider object, grants publication, or supplies guest credentials. Each newly selected repository still needs a host-observed immutable repository ID and an independently admitted persistent-environment route; otherwise repository execution fails closed for that queue while other queues can continue polling. Shared GitHub rate-limit exhaustion stops the whole repository set so one installation cannot evade its account-wide budget by adding queues.
+## Workspace isolation inside a shared profile
 
-## Disposable bootstrap environment setup
+Each repository receives a deterministic workspace identity bound to stable repository identity plus profile identity.
 
-On `codex/temp-fast-functional`, the managed setup inspects the environment foundation, published `linux-development` images, existing persistent environments, and stable-identity execution routes before asking what to create/use.
+Normal DevBridge operations scope repository-controlled bridge locations beneath that workspace. Repository content cannot select another workspace target through the normal routing contract.
 
-- An existing compatible owned environment plus matching route is offered as ready.
-- On Windows/Hyper-V, a discovered repository with an immutable GitHub repository ID may be offered as provisionable when the published base and validation route already exist.
-- Missing/unsupported prerequisites are shown as poll-only blockers.
-- Linux remains a first-class production requirement, but this disposable automatic provisioning shortcut does not pretend that its KVM/QEMU/libvirt installer path is complete.
-- Repository execution is enabled only by explicit setup choice and only when at least one selected environment becomes ready.
-- If the Windows foundation network is the remaining selected-environment prerequisite, setup uses the bounded double-consent UAC flow above and verifies the owned network after elevation instead of asking the operator to paste an administrator command.
+The VM remains the host-security boundary. Workspace path scoping is not a claim that sibling workspaces survive a fully compromised/root shared guest. If two repositories require separate hostile-guest trust domains, local policy must use separate execution profiles/VMs.
 
-`doctor` never forces setup and reports update availability plus an explicit setup-required notice. `update` enters the candidate-validation/activation supervisor path. The canonical installed loader is refreshed only from the accepted runtime.
+## Legacy repository-owned VM migration
 
-Setup maintains `~/.devbridge/install-manifest.json`. It records exact application/config/state/workspace paths, environment identity + repository subject, and referenced image identity. Removal requires one mode and the exact confirmation token:
+Existing repository-owned VMs are retained as migration candidates. Setup does not silently reinterpret one of them as the new profile VM.
+
+Migration should:
+
+1. inventory exact old VM/repository/profile/tool state;
+2. create/select the compatible profile environment;
+3. create the repository workspace;
+4. migrate only safe/useful repository-owned state;
+5. reconstruct profile-level tool/system state when safer than merging opaque machine disks;
+6. verify workspace readiness;
+7. retain old state until the replacement is proven or explicitly discarded;
+8. retire only exact DevBridge-owned obsolete artifacts.
+
+Do not merge several old writable VM disks into one profile disk.
+
+## Uninstall and ownership
+
+Setup maintains an install manifest for exact DevBridge-owned artifacts.
 
 ```text
 node ~/.devbridge/bin/devbridge.mjs uninstall --app-only --confirm REMOVE
 node ~/.devbridge/bin/devbridge.mjs uninstall --purge --confirm REMOVE
 ```
 
-App-only preserves local policy/state/VMs. Purge removes only manifest-listed paths and reverified provider-owned environments. It preserves referenced base images and refuses broad/unproven cleanup; external state/workspace roots are reported for separate operator action.
+App-only preserves local policy/state/profile VMs. Purge removes only exact manifest-listed and reverified DevBridge-owned objects. It must not casually disable Hyper-V, remove KVM/libvirt packages, stop shared services, delete operator-owned VMs/domains/networks/storage, or remove unrelated repository workspaces.
 
-## Persistent VM setup target for main
+Profile environments are manifest-owned once per physical profile VM; adding repositories must not duplicate the physical environment entry.
 
-The production Stage 8 setup/reconfiguration follows the same discover-before-prompt requirement, with qualified provider-complete implementations rather than the disposable shortcut.
+## GitHub authentication
 
-### Windows host discovery
+GitHub credentials remain host control-plane authority. Token values are not serialized into config/status/run state and are not forwarded to profile guests.
 
-Discover where safe:
+Because guests normally have network access, any secret placed in a guest must be assumed exfiltratable. Host GitHub/SSH/publication credentials therefore remain absent from the profile VM. Private dependency/coding-service access requires an explicitly scoped later mechanism rather than copying broad host credentials into persistent guest state.
 
-- Hyper-V feature/provider availability;
-- management privilege/readiness;
-- DevBridge-owned base image inventory;
-- repository VM/differencing-disk state;
-- provider networking and bridge readiness.
+## Runtime updates and candidate validation
 
-### Linux host discovery
+DB-011 owns release identity, exact artifact validation, activation health, rollback, and last-known-good behavior.
 
-Discover where safe:
+Candidate-controlled tests run only through an admitted compatible VM execution route. The candidate does not gain host execution authority merely because the profile VM is unavailable.
 
-- KVM acceleration availability/usability;
-- QEMU/libvirt installation/service/provider readiness;
-- access to the selected libvirt system provider (normally `qemu:///system` when local policy uses it);
-- DevBridge-owned base image/qcow2 overlay inventory;
-- libvirt domain/storage/network and bridge readiness.
+## `doctor`
 
-### Common guided flow
+`doctor` reports observed capabilities, not aspirations. It should distinguish at least:
 
-1. discover provider/account/repository facts before prompting;
-2. propose approved repositories and guest OS profiles;
-3. propose image generations and provider-native storage implications;
-4. show required host changes such as elevation/reboot or Linux package/service/group/session actions;
-5. require explicit operator approval before provisioning/enabling authority-bearing changes;
-6. verify provider/image/environment/bridge readiness;
-7. allow re-entering setup later to add/remove/change repositories, guest profiles, images, resource policy, or repair/reset/reseed environments.
+- host provider availability/management authority;
+- image readiness/identity;
+- execution-profile environment identity/lifecycle;
+- profile resource state;
+- bridge/bootstrap/tool readiness;
+- repository workspace-route readiness;
+- repository-code execution readiness;
+- degraded/reset-required/migration-candidate states.
 
-Do not blindly prompt for repository names, local paths, provider object names, or provider details that can be safely discovered and verified. Do not auto-enable discovered capabilities merely because they exist.
+A provider existing is not sufficient evidence that repository execution is ready.
 
-VM readiness failure must degrade/fail closed; setup never recreates the removed host repository-execution path.
-
-## Provider-owned versus operator-owned infrastructure
-
-DevBridge setup must distinguish its own VM artifacts from shared operator infrastructure.
-
-Windows uninstall/repair must not casually disable Hyper-V or delete operator-owned virtual switches/VMs/disks.
-
-Linux uninstall/repair must not casually remove KVM/QEMU/libvirt packages, stop shared libvirt infrastructure, delete operator-owned domains/storage pools/networks/images, or rewrite system virtualization policy when a DevBridge-owned object suffices.
-
-## Runtime updates
-
-Stage 0 establishes only the fixed managed checkout needed to reach the secure supervisor.
-
-DB-011 owns update policy, signed production release subjects, exact runtime artifact identity, candidate validation, daemon drain, activation health, and rollback.
-
-Only one supervisor may own a DevBridge installation home at a time, even when launches select different config files. A second daemon/update launch fails closed before touching the accepted daemon, runtime candidates, or activation journal; use the active launch's config for `status` and `stop`.
-
-Stage 1 removed the former host candidate execution path. Stage 6 restores candidate preflight/tests through one locally admitted VM validation route while release identity/last-known-good/rollback remain intact. Route or environment absence fails closed before activation.
-
-VM validation attaches through:
-
-- Hyper-V on Windows;
-- KVM/QEMU/libvirt on Linux.
-
-## Operator control
-
-Canonical commands include:
-
-```text
-devbridge doctor
-devbridge poll-once
-devbridge run-once
-devbridge daemon
-devbridge status
-devbridge pause
-devbridge resume
-devbridge stop
-devbridge restart
-devbridge handoff-status
-devbridge handoff-seed
-devbridge handoff-project
-```
-
-`pause` is cooperative task-admission pause at a safe cycle boundary, not an unsafe process/VM freeze. `stop` takes precedence.
-
-Future VM lifecycle commands/setup surfaces preserve persistent repository disk state unless an explicit reset/reseed/delete action is authorized.
-
-## Troubleshooting principle
-
-`doctor` reports observed capabilities, not aspirations.
-
-- Pre-Stage-1 current main: expect Bubblewrap verification for supported Linux repository execution and fail-closed Windows repository execution.
-- Stage 1 through Stage 5: expect repository execution unavailable/no-provider while trusted control-plane functions may remain usable.
-- VM transition: do not interpret partial Hyper-V, KVM, libvirt, image, VM/domain, or bridge state as completed DB-020 support.
-- After Stage 7/8: expect exact provider/image/writable-layer/environment/bridge readiness evidence and no host fallback.
-
-See `docs/roadmap.md` for staging, `docs/vm-lego-studs.md` for replaceability, and `docs/vm-migration.md` for removal/retention details.
+See `docs/execution-profile-environments.md` for the ownership model, DB-020 for the security/execution contract, `docs/vm-lego-studs.md` for provider replaceability, and `docs/vm-migration.md` for migration history.

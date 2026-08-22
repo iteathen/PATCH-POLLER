@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { createRepositoryExecution, gitVisiblePathsFromResult } from './repository-execution.js';
+import { gitVisiblePathsFromResult } from './repository-execution.js';
+import { createExecutionProfileRepositoryExecution } from './execution-profile-routing.js';
 import { resolveBuiltInHelper } from './builtin-helper-resolver.js';
 import { createFastHostRepositoryExecution } from './fast-host-repository-execution.js';
 import { createFastVmRepositoryExecution } from './fast-vm-repository-execution.js';
@@ -101,7 +102,7 @@ export async function createRuntimeExecutionContext({
         rootFor,
         resolveTool: (tool) => resolveTool(tool, { host: true }),
       })
-      : await createRepositoryExecution({
+      : await createExecutionProfileRepositoryExecution({
           stateDirectory: config.state.directory,
           env,
           protectedValues,

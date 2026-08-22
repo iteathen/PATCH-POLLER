@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createConfigurationDiscovery } from '../src/bootstrap/configuration-discovery.mjs';
 import { configureLocalConfig } from '../src/bootstrap/runtime-bootstrap.mjs';
 import { setupEnvironments } from '../src/bootstrap/environment-setup.mjs';
+import { executionProfileSubject } from '../src/app/execution-profile-routing.js';
 import { recordInstallEntries, readInstallManifest } from '../src/bootstrap/install-manifest.mjs';
 import { uninstall } from '../src/bootstrap/uninstall.mjs';
 
@@ -257,11 +258,12 @@ test('environment setup provisions only explicitly selected discovered repositor
     github: { queueRepositories: ['owner/one'] },
   };
   let created = false;
+  const profileSubject = executionProfileSubject('linux-development');
   const foundation = {
     async inspect() { return { ready: true, state: 'ready' }; },
     async listImages() { return [{ identity: 'img-' + 'a'.repeat(32), profile: 'linux-development', retiredAt: null }]; },
     async listEnvironments() {
-      return created ? [{ record: { identity: 'env-' + 'b'.repeat(32), subject: '1', profile: 'linux-development' }, observation: { exists: true, owned: true, compatible: true, state: 'running' } }] : [];
+      return created ? [{ record: { identity: 'env-' + 'b'.repeat(32), subject: profileSubject, profile: 'linux-development' }, observation: { exists: true, owned: true, compatible: true, state: 'running' } }] : [];
     },
   };
   const provisioned = [];
@@ -292,7 +294,9 @@ test('environment setup provisions only explicitly selected discovered repositor
   );
   assert.equal(result.completed, true);
   assert.equal(provisioned[0].subject, '1');
+  assert.equal(result.managedProfiles[0].subject, profileSubject);
   assert.equal(result.managedEnvironments[0].identity, 'env-' + 'b'.repeat(32));
+  assert.equal(result.managedWorkspaces[0].subject, '1');
   const updated = JSON.parse(readFileSync(configFile, 'utf8'));
   assert.equal(updated.execution.fastVmDefaultSwitch, true);
   assert.equal(updated.execution.enabled, true);
@@ -326,7 +330,7 @@ test('interactive environment setup retries invalid selections instead of exitin
     async listImages() { return [{ identity: 'img-' + 'a'.repeat(32), profile: 'linux-development', retiredAt: null }]; },
     async listEnvironments() {
       return [{
-        record: { identity: 'env-' + 'b'.repeat(32), subject: '1', profile: 'linux-development' },
+        record: { identity: 'env-' + 'b'.repeat(32), subject: executionProfileSubject('linux-development'), profile: 'linux-development' },
         observation: { exists: true, owned: true, compatible: true, state: 'running' },
       }];
     },
@@ -339,7 +343,7 @@ test('interactive environment setup retries invalid selections instead of exitin
   });
   assert.equal(result.completed, true);
   assert.deepEqual(result.selected, ['owner/one']);
-  assert.match(ports.text, /Invalid environment selection/u);
+  assert.match(ports.text, /Invalid workspace selection/u);
   assert.match(ports.text, /Invalid execution selection/u);
   const updated = JSON.parse(readFileSync(configFile, 'utf8'));
   assert.equal(updated.execution.fastVmDefaultSwitch, true);
@@ -379,7 +383,7 @@ test('Windows environment setup invokes only the bounded network-elevation seam 
     async listImages() { return [{ identity: 'img-' + 'a'.repeat(32), profile: 'linux-development', retiredAt: null }]; },
     async listEnvironments() {
       return [{
-        record: { identity: 'env-' + 'b'.repeat(32), subject: '1', profile: 'linux-development' },
+        record: { identity: 'env-' + 'b'.repeat(32), subject: executionProfileSubject('linux-development'), profile: 'linux-development' },
         observation: { exists: true, owned: true, compatible: true, state: 'running' },
       }];
     },

@@ -4,13 +4,17 @@ import path from 'node:path';
 import process from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { createEnvironmentFoundation } from '../app/environment-foundation.js';
+import {
+  executionProfileSubject,
+  executionWorkspaceIdentity,
+} from '../app/execution-profile-routing.js';
 import { ensureWindowsFoundationNetwork } from './elevated-provider-setup.mjs';
 import {
   ENVIRONMENT_EXECUTION_ROUTES_PROTOCOL,
   normalizeEnvironmentExecutionRoutes,
   repositoryExecutionRoutesPath,
 } from '../app/repository-execution.js';
-import { provisionRepositoryEnvironment } from '../../scripts/fast-vm/provision-repository-environment.mjs';
+import { provisionExecutionProfileWorkspace } from '../../scripts/fast-vm/provision-repository-environment.mjs';
 
 const PROFILE = 'linux-development';
 
@@ -39,7 +43,7 @@ function selectNames(value, options) {
   return raw.map((entry) => {
     if (/^\d+$/u.test(entry)) {
       const option = options[Number.parseInt(entry, 10) - 1];
-      if (!option) throw new Error(`Environment option ${entry} is out of range.`);
+      if (!option) throw new Error(`Workspace option ${entry} is out of range.`);
       return option.repository;
     }
     return entry;
@@ -65,6 +69,10 @@ async function writeExecutionPolicy(configFile, { useFastVm, enabled }) {
   await rename(temp, configFile);
 }
 
+function readyEnvironment(entry) {
+  return entry?.observation?.exists === true && entry.observation.owned === true && entry.observation.compatible === true;
+}
+
 export async function inspectEnvironmentSetup(config, repositoryRecords, {
   platform = process.platform,
   foundationFactory = createEnvironmentFoundation,
@@ -79,13 +87,18 @@ export async function inspectEnvironmentSetup(config, repositoryRecords, {
   const activeImages = images.filter((entry) => entry.profile === PROFILE && entry.retiredAt == null);
   const source = activeImages.at(-1) ?? null;
   const validationRoute = routes.routes.find((entry) => entry.validation === true && entry.profile === PROFILE) ?? null;
+  const profileSubject = executionProfileSubject(PROFILE);
+  const profileMatches = environments.filter((entry) => entry.record?.subject === profileSubject && entry.record?.profile === PROFILE);
+  if (profileMatches.length > 1) throw new Error(`Execution profile ${PROFILE} has multiple persistent environments.`);
+  const profileEnvironment = profileMatches[0] ?? null;
+  const profileReady = readyEnvironment(profileEnvironment);
+  const legacyEnvironments = environments.filter((entry) => entry.record?.profile === PROFILE && entry.record?.subject !== profileSubject);
   const discovered = new Map(repositoryRecords.map((entry) => [entry.name.toLowerCase(), entry]));
   const options = config.github.queueRepositories.map((repository) => {
     const record = discovered.get(repository.toLowerCase()) ?? null;
     const subject = record?.id ?? null;
-    const environment = subject ? environments.find((entry) => entry.record.subject === subject && entry.record.profile === PROFILE) ?? null : null;
     const route = subject ? routes.routes.find((entry) => entry.subject === subject && entry.profile === PROFILE) ?? null : null;
-    const ready = environment?.observation?.exists === true && environment.observation.owned === true && environment.observation.compatible === true && route != null;
+    const ready = profileReady && route != null;
     const blockers = [];
     if (!subject) blockers.push('immutable repository identity was not discovered');
     if (platform !== 'win32') blockers.push('the disposable automatic environment path is currently Hyper-V/Windows only');
@@ -94,14 +107,32 @@ export async function inspectEnvironmentSetup(config, repositoryRecords, {
     return Object.freeze({
       repository,
       subject,
+      workspace: subject ? executionWorkspaceIdentity(subject, PROFILE) : null,
       ready,
       provisionable: !ready && blockers.length === 0,
-      environment: environment?.record?.identity ?? null,
-      state: environment?.observation?.state ?? null,
+      environment: profileEnvironment?.record?.identity ?? null,
+      state: profileEnvironment?.observation?.state ?? null,
       blocker: ready || blockers.length === 0 ? null : blockers.join('; '),
     });
   });
-  return { foundation, status, source, validationRoute, routes, options };
+  return {
+    foundation,
+    status,
+    source,
+    validationRoute,
+    routes,
+    profile: Object.freeze({
+      id: PROFILE,
+      subject: profileSubject,
+      ready: profileReady,
+      provisionable: platform === 'win32' && source != null && validationRoute != null,
+      environment: profileEnvironment?.record?.identity ?? null,
+      state: profileEnvironment?.observation?.state ?? null,
+      legacyEnvironmentCount: legacyEnvironments.length,
+    }),
+    legacyEnvironments,
+    options,
+  };
 }
 
 export async function setupEnvironments(config, repositoryRecords, argv, {
@@ -109,7 +140,7 @@ export async function setupEnvironments(config, repositoryRecords, argv, {
   output = process.stdout,
   platform = process.platform,
   foundationFactory = createEnvironmentFoundation,
-  provisionFn = provisionRepositoryEnvironment,
+  provisionFn = provisionExecutionProfileWorkspace,
   networkSetupFn = ensureWindowsFoundationNetwork,
   promptFactory = createInterface,
 } = {}) {
@@ -125,36 +156,47 @@ export async function setupEnvironments(config, repositoryRecords, argv, {
   const supplied = explicit.length > 0 || all || none || enable || disable;
 
   if (!supplied && input.isTTY === true && output.isTTY === true) {
-    output.write('\nRepository virtual-environment options:\n');
+    output.write('\nExecution profiles:\n');
+    const profileState = inspection.profile.ready
+      ? `ready (${inspection.profile.environment}, ${inspection.profile.state})`
+      : inspection.profile.provisionable
+        ? 'can create one persistent VM'
+        : 'not provisionable';
+    output.write(`  ${inspection.profile.id}: ${profileState}\n`);
+    if (inspection.profile.legacyEnvironmentCount > 0) {
+      output.write(`  ${inspection.profile.legacyEnvironmentCount} repository-owned VM(s) are retained as migration candidates and are not selected as the execution profile.\n`);
+    }
+    output.write('\nRepository workspace options:\n');
     inspection.options.forEach((entry, index) => {
-      const state = entry.ready ? `ready (${entry.environment}, ${entry.state})` : entry.provisionable ? 'can create persistent VM' : `poll-only: ${entry.blocker}`;
+      const state = entry.ready
+        ? `ready in ${inspection.profile.id} (${entry.workspace})`
+        : entry.provisionable
+          ? `can register workspace in ${inspection.profile.id}`
+          : `poll-only: ${entry.blocker}`;
       output.write(`  ${index + 1}. ${entry.repository}: ${state}\n`);
     });
     const prompt = promptFactory({ input, output });
     try {
       while (true) {
-        const answer = await prompt.question('Persistent VM selections (numbers, all, none, or configured owner/name; separate with spaces or commas) [none]: ');
+        const answer = await prompt.question('Repository workspace selections (numbers, all, none, or configured owner/name; separate with spaces or commas) [none]: ');
         try {
-          selected = selectNames(
-            answer,
-            inspection.options,
-          );
+          selected = selectNames(answer, inspection.options);
           const selectedSet = new Set(selected.map((value) => value.toLowerCase()));
           for (const repository of selectedSet) {
             const option = inspection.options.find((entry) => entry.repository.toLowerCase() === repository);
-            if (!option) throw new Error(`Environment selection is not a configured repository: ${repository}`);
+            if (!option) throw new Error(`Workspace selection is not a configured repository: ${repository}`);
             if (!option.ready && !option.provisionable) throw new Error(`Cannot use ${option.repository}: ${option.blocker}`);
           }
           break;
         } catch (error) {
-          output.write(`  Invalid environment selection: ${String(error?.message ?? error)} Try again.\n`);
+          output.write(`  Invalid workspace selection: ${String(error?.message ?? error)} Try again.\n`);
         }
       }
       while (true) {
-        const answer = await prompt.question(`Enable repository execution for ready selected environments (${selected.length > 0 ? 'yes' : 'no'}) [${selected.length > 0 ? 'yes' : 'no'}]: `);
+        const answer = await prompt.question(`Enable repository execution for selected workspaces (${selected.length > 0 ? 'yes' : 'no'}) [${selected.length > 0 ? 'yes' : 'no'}]: `);
         try {
           executionEnabled = yesNo(answer, selected.length > 0);
-          if (executionEnabled && selected.length === 0) throw new Error('Repository execution requires at least one selected environment.');
+          if (executionEnabled && selected.length === 0) throw new Error('Repository execution requires at least one selected workspace.');
           break;
         } catch (error) {
           output.write(`  Invalid execution selection: ${String(error?.message ?? error)} Try again.\n`);
@@ -172,8 +214,9 @@ export async function setupEnvironments(config, repositoryRecords, argv, {
   if (!supplied && input.isTTY !== true) {
     output.write(`${JSON.stringify({
       provider: inspection.status,
+      profile: inspection.profile,
       source: inspection.source,
-      environments: inspection.options,
+      workspaces: inspection.options,
       changed: false,
       completed: false,
       hint: 'Re-run setup with --all-environments, repeated --environment owner/name, or --no-environments; add --enable-execution or --disable-execution.',
@@ -183,7 +226,7 @@ export async function setupEnvironments(config, repositoryRecords, argv, {
 
   const selectedSet = new Set(selected.map((value) => value.toLowerCase()));
   for (const repository of selectedSet) {
-    if (!inspection.options.some((entry) => entry.repository.toLowerCase() === repository)) throw new Error(`Environment selection is not a configured repository: ${repository}`);
+    if (!inspection.options.some((entry) => entry.repository.toLowerCase() === repository)) throw new Error(`Workspace selection is not a configured repository: ${repository}`);
   }
   if (platform === 'win32' && selectedSet.size > 0 && inspection.status.capabilities?.networking?.ready === false) {
     const confirmed = argv.includes('--allow-provider-elevation') && optionValues(argv, '--confirm').includes('APPLY');
@@ -199,7 +242,7 @@ export async function setupEnvironments(config, repositoryRecords, argv, {
   }
   for (const option of inspection.options.filter((entry) => selectedSet.has(entry.repository.toLowerCase()))) {
     if (option.ready) continue;
-    if (!option.provisionable) throw new Error(`Cannot provision ${option.repository}: ${option.blocker}`);
+    if (!option.provisionable) throw new Error(`Cannot provision workspace for ${option.repository}: ${option.blocker}`);
     await provisionFn({
       stateDirectory: config.state.directory,
       identityFile: inspection.validationRoute.access.identityFile,
@@ -212,22 +255,40 @@ export async function setupEnvironments(config, repositoryRecords, argv, {
   }
   inspection = await inspectEnvironmentSetup(config, repositoryRecords, { platform, foundationFactory });
   const unresolved = inspection.options.filter((entry) => selectedSet.has(entry.repository.toLowerCase()) && !entry.ready);
-  if (unresolved.length > 0) throw new Error(`Selected environments did not become ready: ${unresolved.map((entry) => entry.repository).join(', ')}`);
+  if (unresolved.length > 0) throw new Error(`Selected workspaces did not become ready: ${unresolved.map((entry) => entry.repository).join(', ')}`);
   const useFastVm = selectedSet.size > 0;
   const enabled = executionEnabled ?? useFastVm;
-  if (enabled && !useFastVm) throw new Error('Repository execution cannot be enabled without at least one ready selected environment.');
+  if (enabled && !useFastVm) throw new Error('Repository execution cannot be enabled without at least one ready selected workspace.');
   await writeExecutionPolicy(config.__file, { useFastVm, enabled });
-  const managedEnvironments = inspection.options
+  const managedProfiles = useFastVm && inspection.profile.ready ? [{
+    profile: inspection.profile.id,
+    subject: inspection.profile.subject,
+    identity: inspection.profile.environment,
+  }] : [];
+  const managedWorkspaces = inspection.options
     .filter((entry) => selectedSet.has(entry.repository.toLowerCase()) && entry.ready)
-    .map((entry) => ({ repository: entry.repository, subject: entry.subject, identity: entry.environment }));
-  output.write(`${JSON.stringify({ provider: inspection.status, environments: inspection.options, selected: [...selectedSet], executionEnabled: enabled, changed: true, completed: true }, null, 2)}\n`);
+    .map((entry) => ({ repository: entry.repository, subject: entry.subject, identity: entry.workspace, profile: inspection.profile.id }));
+  output.write(`${JSON.stringify({
+    provider: inspection.status,
+    profile: inspection.profile,
+    workspaces: inspection.options,
+    selected: [...selectedSet],
+    executionEnabled: enabled,
+    changed: true,
+    completed: true,
+  }, null, 2)}\n`);
   return {
     completed: true,
     changed: true,
     selected: [...selectedSet],
     executionEnabled: enabled,
     stateDirectory: config.state.directory,
-    managedEnvironments,
+    managedProfiles,
+    managedWorkspaces,
+    // Compatibility with the existing install-manifest composition. This list
+    // is deliberately profile-scoped and therefore contains at most one entry
+    // for the current profile, regardless of repository count.
+    managedEnvironments: managedProfiles,
     sourceIdentity: useFastVm ? inspection.source?.identity ?? null : null,
   };
 }

@@ -2,253 +2,205 @@
 
 ## Current checkpoint
 
-DevBridge already has a substantial host control plane: exact GitHub provenance, managed authoritative Git/workspaces, durable runs/recovery, controller plans, tool inventory/onboarding, checkpoint-and-proceed decisions, multi-agent leases/fencing, baseline-drift reverification, supervised self-update, cooperative pause/resource priority, and the DB-019 verification-governance contract.
+DevBridge has a substantial trusted host control plane: exact GitHub provenance, authoritative Git/workspaces, durable runs/recovery, controller plans, tool inventory/onboarding, checkpoint-and-proceed decisions, coordination leases/fencing, baseline-drift reverification, supervised self-update, resource priority/pause, and cost-aware verification governance.
 
-The VM program has completed its sandbox-removal and host-foundation phases while keeping repository execution deliberately fail-closed.
+The VM program has also completed the major security pivot away from host repository-code sandboxes. Repository-controlled execution is VM-only and fails closed when the selected VM route is unavailable.
 
-- Stage 0 ratified DB-020 and the Windows/Hyper-V plus Linux/KVM-QEMU-libvirt target architecture.
-- Stage 1 removed the active host-sandbox repository-execution implementation, preserved the neutral execution studs, and established the explicit no-production-provider state.
-- Stage 2 implements provider-local Hyper-V and KVM/QEMU/libvirt management foundations, owned networking/storage lifecycle, and immutable/versioned base-image publication and reconciliation behind a neutral environment-foundation boundary.
-- `doctor` reports the Stage-2 environment foundation separately from `RepositoryExecution`.
-- Repository-controlled execution remains intentionally unavailable/fail-closed through Stages 3–5 and is restored through persistent VMs only in Stage 6.
-- No direct-host/uncontained fallback is permitted during that gap.
+Issue #138 corrects the persistent VM ownership model that emerged during the first VM lifecycle implementation:
 
-Provider/image readiness in Stage 2 does not imply repository-execution readiness. Per-repository VM state, the host↔guest bridge, and guest bootstrap remain later-stage responsibilities.
+> **Execution profiles own persistent VMs. Repositories own isolated workspaces inside compatible execution-profile VMs.**
 
-## Active VM program — issue #107
+This correction is now part of the active VM roadmap. Repository count must not determine VM count.
 
-The dependency order is authoritative. Each stage performs the project's planning/research gate before implementation and must not depend on a lower stage that has not landed.
+## Active provider targets
 
-### Stage 0 — architecture/spec ratification and migration inventory — #108 — complete
+Required host providers remain:
 
-Goal: make the VM pivot and sandbox-first migration normative before implementation begins.
+- Windows / Hyper-V;
+- Linux / KVM-QEMU-libvirt.
 
-Deliverables:
+Both attach through provider-neutral lifecycle/image/bridge studs. Provider-specific disk/domain/network/transport details stay in adapters.
 
-- DB-020 persistent VM execution-boundary contract;
-- Windows/Hyper-V and Linux/KVM-QEMU-libvirt as coequal first-class provider targets;
-- DB-003/DB-008 and related active documentation aligned to the VM trust model;
-- explicit network-on confidentiality implications;
-- persistent repository+provider+guest-OS environment lifetime/identity requirements;
-- provider-native storage model: VHDX differencing and qcow2 backing/overlays;
-- host-only authority/secrets enumeration;
-- transport-neutral narrow bridge contract with provider-specific adapters;
-- `docs/vm-migration.md` classification/removal map;
-- `docs/vm-lego-studs.md` sandbox-first connection-stud/replaceability plan.
+## VM program history and current direction
 
-No runtime/config/CI cleanup belongs in this stage.
+### Stage 0 — architecture/spec ratification — #108 — complete
 
-### Stage 1 — remove host sandbox execution, expose/prove studs, establish fail-closed no-provider state — #109 — complete
+Established DB-020, provider parity, VM-only host security boundary, immutable images, host-only authority/secrets, narrow bridge contracts, and migration inventory.
 
-This is the architectural falsification stage and happens **before production VM implementation**.
+The original Stage-0/DB-020 topology assumed a repository-owned persistent environment. Issue #138 supersedes that ownership assumption while preserving the VM-only security boundary.
 
-Sequence:
+### Stage 1 — remove host sandbox execution — #109 — complete
 
-1. inspect the exact current-head repository-execution path and map the existing connection studs at symbol/file level;
-2. classify each dependency as valid stud, implementation leak, missing stud, retained generic behavior, or provider-local detail;
-3. disable/remove legacy sandbox provider registration and establish a deliberate no-production-provider state;
-4. prove repository-controlled operations fail before host execution and cannot fall back to uncontained/direct host processes;
-5. repair abstraction leaks revealed by unplugging the sandbox;
-6. attach a minimal fake provider in tests through the exposed studs;
-7. delete the active Bubblewrap/host-sandbox execution implementation and active sandbox-specific wiring while preserving generic protocols/control-plane behavior and historical evidence;
-8. leave a bounded provider-neutral attachment surface for Hyper-V and KVM/libvirt.
+Removed active Bubblewrap/AppContainer/ProcessContainer-style repository execution, proved fail-closed no-provider behavior, preserved neutral execution studs, and prevented direct/uncontained host fallback.
 
-After Stage 1, trusted static/control-plane work may continue where independently classified safe, but repository-controlled execution is intentionally unavailable.
+### Stage 2 — provider/image foundation — #110 — complete
 
-### Stage 2 — Windows Hyper-V + Linux KVM/QEMU/libvirt backends and immutable base-image lifecycle — #110 — complete
+Implemented provider-local Hyper-V and KVM/QEMU/libvirt management foundations, owned storage/networking lifecycle, and immutable/versioned base-image behavior behind neutral contracts.
 
-Implement both required host providers against the Stage-1 studs while repository execution remains disabled.
+### Stage 3 — persistent environment lifecycle — #111 — complete historical implementation
 
-Implementation evidence and boundary decisions are recorded in `docs/vm-stage2-provider-foundation.md`.
+Proved provider-native persistent lifecycle, image lineage, reset/reseed, recovery, and exact VM/domain ownership mechanics.
 
-Windows:
+The original Stage 3 composition used repository identity as the persistent environment owner. That topology is now historical. Its lifecycle mechanics remain reusable because the environment `subject` contract was opaque.
 
-- observed Hyper-V capability/management readiness;
-- immutable/versioned Windows/Linux guest VHD/VHDX base images;
-- provider networking and provider-owned object lifecycle.
+Current composition supplies an execution-profile subject instead.
 
-Linux:
+### Stage 4 — narrow host↔guest bridge — #112 — complete
 
-- observed KVM acceleration + libvirt/QEMU readiness;
-- normally locally authorized `qemu:///system` management or a justified narrower equivalent;
-- immutable/versioned Windows/Linux guest base images;
-- qcow2 base/backing identity;
-- provider networking/storage lifecycle.
+Provides bounded command/file exchange behind provider adapters without exposing arbitrary host paths, credentials, or provider-management authority.
 
-Both providers must expose truthful readiness and keep raw VM/domain/image/command authority local. If adding a provider requires broad controller/business rewrites, reopen Stage 1 instead of bypassing the studs.
+### Stage 5 — guest bootstrap/tooling/network — #113 — complete on migration stack
 
-### Stage 3 — persistent per-repository/per-OS writable layers and VM lifecycle — #111
+Provides persistent guest preparation and development tool behavior needed by VM execution.
 
-Implement repository environment persistence on both providers.
+### Stage 6 — VM-only repository execution — #114 — complete on migration stack
 
-- Hyper-V: per-repository differencing VHD/VHDX where supported.
-- KVM/QEMU: per-repository qcow2 overlays/backing chains where supported.
+Restores repository-controlled operations through persistent VM routes with host-owned source/candidate/Git authority and no direct-host fallback.
 
-Prove stable environment identity, stop/start persistence, daemon/provider restart reconciliation, explicit reset/reseed, disk-chain integrity, concurrency control, and owned cleanup without silent reparent/rebase.
+Issue #138 changes route topology so multiple repository workspaces may resolve to one physical compatible profile VM.
 
-Repository-controlled execution remains unavailable during this stage.
+### Stage 7 — provider/security/recovery/resource qualification — #115 — active
 
-### Stage 4 — provider-adapted host↔guest command/file bridge — #112
+Qualification now includes both original VM security claims and shared-profile workspace claims:
 
-Research/select concrete transports while preserving one typed host-controlled bridge contract behind the Stage-1 execution/transfer/result studs.
+- real Hyper-V/KVM-libvirt provider evidence;
+- no host credential/control leakage;
+- provider/image/writable-layer lineage;
+- restart/reset/reseed recovery;
+- one profile VM serving multiple repository workspaces;
+- workspace route/path/cleanup targeting;
+- process/task/result isolation at the claimed boundary;
+- shared-cache ownership rules;
+- typed profile resource failures;
+- no direct-host fallback.
 
-Hyper-V candidates include integration channels/sockets and Windows-specific PowerShell Direct where appropriate.
+Workspace scoping is not a claim that sibling workspaces survive a fully compromised/root shared guest. Separate hostile-guest trust domains require separate profiles/VMs.
 
-KVM/libvirt candidates include QEMU Guest Agent/virtio-serial/vsock and libvirt channel APIs. QEMU Guest Agent is guest-controlled/untrusted response data, not a security oracle.
+### Stage 8 — setup/reconfiguration — #116 / #103 — active
 
-The bridge must provide exact environment/run/operation identity, bounded exec/input/output/file transfer, timeout/cancellation/liveness, no arbitrary host-path naming, no control credentials, and restart/recovery semantics.
+Setup is discover-first and now separates:
 
-Repository-controlled execution remains unavailable to normal DevBridge task flow during this stage.
+1. host provider/image/profile readiness;
+2. repository discovery/approval;
+3. repository workspace routing;
+4. execution enablement.
 
-### Stage 5 — guest bootstrap, networking, toolchain, development environment — #113
+Repository `all` means all eligible workspaces, not one VM per repository. Profile provisioning is explicit/demand-driven and resource-preflighted.
 
-Make persistent Windows/Linux guests useful for real development on both provider families.
+Legacy repository-owned VMs are migration candidates, not silently adopted profile environments.
 
-Target behavior:
+### Stage 9 — final cleanup — #117 — pending final qualification
 
-- normal guest networking enabled by default;
-- Node/CMake/CTest/native compiler/package-manager/browser/coding-tool workflows as needed by acceptance;
-- guest-local tooling/caches survive VM stop/restart;
-- no required Bubblewrap/AppContainer layer inside the guest;
-- no host credentials or arbitrary writable host mounts;
-- guest tool inventory/readiness observed through the bridge;
-- base-image/tooling updates versioned instead of mutating parents/backings beneath existing repository state.
+Remove stale sandbox-era and repository-owned-topology compatibility/documentation after migration behavior and real provider qualification are complete.
 
-Repository-controlled execution is still not restored to normal controller/task routing here.
+## Issue #138 implementation slices
 
-### Stage 6 — restore repository-controlled execution through persistent VMs only — #114
+The execution-profile correction is considered complete only when all of the following hold:
 
-Implementation status: complete on the VM migration stack. See `docs/vm-stage6-repository-execution.md`. Stage 7 retains real-provider security, recovery, resource, and host/guest matrix qualification.
+1. stable profile identity is independent of repository identity;
+2. stable workspace identity binds repository + profile without provider leakage;
+3. many workspace routes can resolve to one physical profile environment;
+4. bridge operations are workspace-scoped;
+5. provider adapters remain repository-agnostic;
+6. selecting all repositories cannot fan out VM creation/start;
+7. profile memory/resource allocation is preflighted and typed;
+8. legacy repository-owned environments have explicit migration/retirement semantics;
+9. docs/specs no longer present one VM per repository as the active target;
+10. CI and real-provider qualification cover the new claimed boundaries.
 
-This is the functional restoration stage, not merely a live cutover from one simultaneously-running provider to another.
+## Execution-profile evolution
 
-Implement:
+Profiles represent materially distinct platforms, not organizational grouping.
 
-- controller-plan deterministic operation routing to exact repository VM environments;
-- proposal/coding-worker execution through the VM bridge;
-- source synchronization into persistent guests;
-- candidate/result import back to the host;
-- host-authoritative Git/sealing/publication unchanged;
-- dynamic `tool.*` probing/execution in the guest;
-- package/build/test/browser repository execution in the guest;
-- runtime candidate-controlled validation through a provider-native VM validation environment;
-- exact drift/source/candidate identity checks;
-- authenticated external-service/private-source support only through explicit mechanisms that do not copy broad host authority into persistent guests.
+Expected examples include:
 
-There is **no sandbox/direct-host fallback**. If the selected VM provider/environment is unavailable, repository execution remains unavailable/fail-closed.
+- `windows`;
+- `linux`;
+- `windows+cuda`;
+- `linux+cuda`.
 
-### Stage 7 — provider/guest matrix verification, doctor, recovery, CI, resources, security and replaceability acceptance — #115
+A new profile is justified only by actual compatibility/isolation/resource requirements such as OS, kernel, driver, GPU/device, licensing, architecture, or toolchain constraints.
 
-This is the replacement-acceptance gate.
+Do not create profiles merely because repositories differ.
 
-Add real evidence for both host providers:
+## Workspace lifecycle follow-through
 
-- Hyper-V provider/base-image/environment/bridge readiness;
-- KVM/QEMU/libvirt provider/base-image/environment/bridge readiness;
-- Windows/Linux guest workloads for every host/guest combination claimed supported;
-- root/admin-compromised guest cannot obtain host secrets, authoritative Git/publication state, daemon/coordination/release state, arbitrary host paths/mounts, or provider-management authority;
-- hostile/forged guest-agent/helper responses fail closed;
-- network-on guest confidentiality model;
-- VHDX parent/child and qcow2 backing/overlay identity;
-- persistent state, reset/reseed, timeout/cancellation, restart/recovery;
-- source/candidate import and host sealing;
-- runtime candidate VM validation;
-- DB-019 exact evidence identity and cost-aware qualification;
-- truthful provider-specific resource policy;
-- `doctor` distinguishes configuration from observed readiness;
-- fake-provider/stud tests still pass;
-- repository-wide checks confirm the deleted sandbox architecture has not been reintroduced and no direct-host fallback exists.
+Near-term work after the basic routing correction should make workspace lifecycle first-class where needed:
 
-Real virtualization qualification may require self-hosted/dedicated virtualization-capable runners. Do not replace real provider evidence with mocks because hosted CI lacks nested virtualization.
+- explicit workspace inventory/status;
+- exact workspace reset/reseed/cleanup;
+- repository-local HOME/TMP/config overlays where required;
+- safe cache-sharing policy;
+- migration tooling for useful old repository-owned state;
+- operator-visible workspace/profile relationship in `doctor`/setup;
+- task scheduling/resource accounting when multiple workspaces share one profile.
 
-### Stage 8 — Windows/Linux installer/setup/reconfiguration integration — #116
+These operations must remain narrower than profile reset/delete and must not destroy sibling workspaces.
 
-The disposable Windows bootstrap now includes one bounded Stage-8 slice for an observed privilege split: when ordinary Hyper-V management is ready but the DevBridge-owned gateway/WinNAT needs an administrator token, setup uses an exact-request, double-consent, hidden UAC helper and re-verifies through the existing foundation stud. This does not complete Stage 8; Linux setup, prerequisite installation/authorization/reboot handling, image acquisition, guest enrollment, full repair/reconfiguration, and migration remain open.
+## Resource governance
 
-Coordinate with issue #103.
+Profile resource policy owns:
 
-Setup should discover before prompting:
+- memory/vCPU;
+- host reserve/preflight;
+- persistent disk growth/retention;
+- active-profile/warm-pool policy;
+- idle shutdown/suspend;
+- GPU/device exclusivity;
+- operation timeout/cancel.
 
-Windows:
+Task/process limits inside a running profile may be separate. A raw repository count or `maxConcurrentTasks` value must not imply VM fleet size or a scheduler.
 
-- Hyper-V availability/privilege/image/environment state.
+## Verification governance
 
-Linux:
+Cost-aware verification remains control-plane authority.
 
-- KVM acceleration, QEMU/libvirt service/provider/access, image/environment state.
+Cheap checks should run before expensive provider qualification. Real VM/security claims require capable hardware; hosted CI unit/mocks are architecture evidence but do not substitute for real Hyper-V/KVM boundary qualification.
 
-Both:
+Evidence should bind relevant candidate, provider, image, profile environment, workspace, bridge, and toolchain identities so still-valid expensive evidence can be reused safely.
 
-- approved repositories and immutable repo IDs;
-- guest profiles/images;
-- storage implications;
-- bridge/bootstrap readiness;
-- resource defaults;
-- explicit prerequisites requiring elevation/reboot/package/service/group/session changes.
+## Setup/operator experience target
 
-Setup must suggest safe defaults, require explicit consent for authority-bearing changes, support re-entry for repair/reseed/migration, and deliberately migrate/deprecate legacy sandbox-era config instead of silently reinterpreting it.
+The desired setup experience is a guided review of discovered state, not a questionnaire and not a hidden VM fleet provisioner.
 
-A fresh or migrated installation must never reactivate direct host repository execution if VM readiness is absent.
+A useful summary is:
 
-### Stage 9 — finalize the VM-only architecture and remove migration scaffolding — #117
+```text
+Repositories approved: 15
+Repository workspaces enabled: 15
+Ready execution profiles: 1
+Additional profiles required now: 0
+```
 
-The active sandbox runtime should already be gone from Stage 1. Stage 9 is therefore final simplification after Stage-7/8 acceptance.
+A resource-bearing change should be expressed in profile terms, for example:
 
-Expected work:
+```text
+Create linux+cuda profile VM: 8 GiB RAM, 4 vCPU, GPU access
+```
 
-- remove temporary no-provider migration diagnostics/scaffolding no longer needed once VM setup is the normal path;
-- remove/deprecate remaining sandbox-era config/schema/help compatibility after Stage 8 has an explicit migration story;
-- remove stale sandbox terminology from active docs/status surfaces;
-- remove dead compatibility tests/CI retained only for the migration period;
-- confirm no Bubblewrap/AppContainer/ProcessContainer runtime or direct-host repository-execution fallback remains;
-- preserve generic process/result capture, deterministic operation registry, worker/result protocol semantics, authoritative Git/publication, recovery, supervision, leases, checkpoints, and verification evidence;
-- retire/close draft PR #106 as superseded while preserving historical evidence;
-- confirm the final codebase has one coherent VM-only repository-execution architecture.
+rather than as fifteen repository VM decisions.
 
-If Stage 9 discovers active sandbox runtime is still structurally required, that is a failed earlier LEGO test and must be repaired rather than treated as routine cleanup.
+## Deferred/future work
 
-## Parallel active work
+After issue #138 and Stage 7/8 qualification:
 
-### DB-019 verification-cost/evidence implementation — #105
+- richer profile compatibility/capability selection;
+- GPU execution-profile support where hardware exists;
+- workspace lifecycle/migration tooling;
+- resource-aware scheduling across profiles;
+- optional stronger per-workspace isolation mechanisms if a real threat model requires them;
+- additional providers only when justified, not for abstraction symmetry.
 
-VM work integrates with DB-019:
+## Documentation authority
 
-- provider/bridge/security changes can force qualification;
-- exact host platform/provider/image/environment/bridge identities participate in evidence;
-- long VM suites need liveness and suite-specific timing;
-- exact still-valid VM qualification should not be repeated merely because chat/daemon context rolled over.
+Current active target documents are:
 
-### Setup/reconfiguration UX — #103
+- `specs/DB-020-vm-execution-boundary.md`;
+- `docs/execution-profile-environments.md`;
+- `docs/architecture.md`;
+- `docs/setup.md`;
+- `docs/vm-migration.md`;
+- this roadmap;
+- active issues #103, #107, #115, #116, #117, and #138.
 
-Issue #103 governs broader installation discovery/re-entry behavior. VM Stage 8 coordinates with it rather than creating a second unrelated setup wizard.
-
-### Remaining #49 work
-
-Issue #107 supersedes #49's repository-code sandbox-provider direction only.
-
-Unrelated #49 surfaces such as per-installation dispatch/addressing, CLI/product ergonomics, and future truthful resource governance remain separate unless a later issue explicitly moves them.
-
-## Other known boundaries
-
-These remain intentionally incomplete unless covered by the VM stages above:
-
-- complete generic remote-effect journaling/correlation for every future GitHub mutation;
-- per-installation human-to-workstation task addressing for shared team queues;
-- stronger numeric repository/tool/profile identity evidence outside Stage 1;
-- GitHub App installation authentication;
-- general parallel task scheduling;
-- default-branch merge/release/deployment as ordinary task effects.
-
-## Engineering rules for roadmap work
-
-For every VM stage:
-
-1. read `AGENTS.md`, active specs, DB-020, prerequisite VM stages, `docs/vm-migration.md`, and `docs/vm-lego-studs.md`;
-2. inspect the implementation being replaced/extended;
-3. research the relevant Hyper-V and/or KVM/QEMU/libvirt platform behavior and failure semantics where applicable;
-4. write a scoped plan covering ownership, state transitions, authority crossings, recovery, tests, provider parity, migration, and expected files;
-5. sanity-check against correctness/containment, persistence, recoverability, operator UX, performance, DB-019 verification cost, and LEGO replaceability/change-scope;
-6. never introduce direct-host repository execution merely to bridge the intentional no-provider period;
-7. proceed when no genuine architecture/authority choice remains; checkpoint only high-leverage architectural decisions.
-
-Preserve historical handoffs/audits rather than rewriting them to look current.
+Historical Stage 3 ownership language, old sandbox work, handoffs, tests, and PRs remain evidence but are non-normative where they conflict with the execution-profile correction.

@@ -3,11 +3,11 @@ import path from 'node:path';
 import { loadConfig } from '../config.js';
 import { GitClient } from '../git/git-client.js';
 import {
-  createRepositoryExecution,
   gitVisiblePathsFromResult,
   loadEnvironmentExecutionRoutes,
   validationEnvironmentExecutionRoute,
 } from '../app/repository-execution.js';
+import { createExecutionProfileRepositoryExecution } from '../app/execution-profile-routing.js';
 import { createFastVmRepositoryExecution } from '../app/fast-vm-repository-execution.js';
 import {
   REPOSITORY_EXECUTION_REQUEST_PROTOCOL,
@@ -41,7 +41,7 @@ function protectedValues(config, policy, env) {
 }
 
 export function candidateRepositoryExecutionFactory(config, {
-  createExecution = createRepositoryExecution,
+  createExecution = createExecutionProfileRepositoryExecution,
   createFastVmExecution = createFastVmRepositoryExecution,
 } = {}) {
   return config?.execution?.fastVmDefaultSwitch === true ? createFastVmExecution : createExecution;

@@ -1,23 +1,25 @@
 # DevBridge architecture
 
-## Purpose and current transition
+## Purpose
 
 DevBridge is a trusted local control plane that turns remote development requests into bounded local work without giving remote content direct machine authority.
 
-DB-020 defines the target repository-execution architecture: **persistent, networked virtual machines are the sole required repository-code security boundary**.
+DB-020 defines the repository-execution security boundary. `docs/execution-profile-environments.md` defines the persistent VM ownership topology.
 
-The initial host-provider set is first-class on both supported host families:
+The active rule is:
+
+> **Execution profiles own persistent VMs. Repositories own isolated workspaces inside compatible execution-profile VMs.**
+
+Persistent VM count therefore follows materially distinct execution platforms, not repository count.
+
+## Required host providers
+
+The initial provider set is first-class on both host families:
 
 - Windows host -> Hyper-V;
 - Linux host -> KVM/QEMU managed through libvirt.
 
-Stages 0–6 are implemented on the VM migration stack. The Linux/Bubblewrap host-sandbox implementation is absent, while draft PR #106 remains superseded Windows ProcessContainer/AppContainer evidence.
-
-The approved migration does **not** keep the legacy sandbox live until VM replacement is complete. Stage 1 removes active host-sandbox repository execution first, establishes an explicit fail-closed no-provider state, and uses that removal to expose/prove the LEGO connection studs. Stages 2–5 build the VM system while normal repository-controlled execution remains unavailable. Stage 6 restores repository execution through VMs only.
-
-No direct/uncontained host fallback is allowed during the no-provider interval.
-
-`docs/vm-migration.md` records the removal/retention inventory. `docs/vm-lego-studs.md` defines the unplug/delete/fake-provider/VM-attachment proof. `docs/vm-stage6-repository-execution.md` defines the restored route/source/candidate contract.
+Provider-specific commands, disk formats, VM/domain identities, networking, and bridge transports stay inside provider adapters. Generic control-plane modules operate on neutral profile/environment/workspace contracts.
 
 ## Authority hierarchy
 
@@ -25,8 +27,9 @@ DevBridge owns authoritative:
 
 - task/feedback/decision provenance;
 - local capability policy;
-- repository identity and authorized baselines;
-- VM provider/image/environment lifecycle;
+- stable repository identity and authorized baselines;
+- repository-to-profile/workspace routing policy;
+- execution-profile identity and provider/image lifecycle;
 - host↔guest bridge admission;
 - GitHub credentials and API mutation authority;
 - coordination identity, leases, and fencing;
@@ -43,278 +46,327 @@ Remote controllers, coding models, repository content, dependencies, guest tools
 
 ### Trusted host
 
-The trusted host contains the DevBridge controller and host-only authority:
+The host contains:
 
-- GitHub and Git transport credentials;
-- DB-016 coordination private keys;
+- DevBridge controller and local policy;
+- GitHub/Git transport credentials;
+- coordination private keys;
 - release/signing authority;
-- authoritative Git administration and publication refs;
-- daemon locks/control state;
-- run/effect/checkpoint/verification journals;
-- selected VM-provider management authority;
-- base-image registry and environment mapping.
+- authoritative Git administration/publication refs;
+- daemon/control/recovery state;
+- VM-provider management authority;
+- immutable base-image registry;
+- profile/workspace routing authority.
 
-Host code may run fixed/static control operations only when their implementation cannot be redirected into repository-controlled code.
+Host code may execute fixed/static control operations only when they cannot be redirected into repository-controlled code.
 
-During the intentional Stage-1-to-Stage-5 no-provider interval, absence of a repository execution provider means repository-controlled work is unavailable. It never broadens the set of operations considered safe to run on the host.
+Provider/profile absence never broadens the set of host-safe operations.
 
-### Untrusted repository environment
+### Untrusted execution-profile VM
 
-A repository environment is one persistent VM bound to stable repository identity + host provider + enabled guest OS/profile + image/environment generation.
+A profile VM is persistent untrusted guest state for one materially distinct execution platform.
 
-Assume guest administrator/root compromise. The guest may control every guest-local process/file/service, package/tool installation, build/test output, coding worker, guest Git repository, and bridge helper/guest agent. It also has normal network access by default.
+Assume guest administrator/root compromise. The guest may control every guest-local process/file/service, package/tool installation, build/test output, coding worker, guest Git repository, and guest-side bridge helper. It normally has network access.
 
-The host therefore exposes no secrets or authoritative writable state to it. Compromise of the guest may destroy/exfiltrate guest data; it must not grant host GitHub/publication/coordination/release/daemon/provider-management authority.
+The host therefore exposes no host secrets or authoritative writable control state to the VM.
 
-No required Bubblewrap/AppContainer/ProcessContainer layer exists inside the guest.
+Compromise of a profile VM may compromise guest/workspace data in that profile, but it must not grant host GitHub/publication/coordination/release/daemon/provider-management authority.
+
+### Repository workspace
+
+Each admitted repository/profile pair has a deterministic workspace identity inside the selected profile VM.
+
+Normal DevBridge operations scope repository-controlled `input`, `work`, `output`, `scratch`, and `cache` paths beneath that workspace identity before reaching the physical VM.
+
+Repository content cannot choose another workspace target through the normal routing contract.
+
+This is a DevBridge operation/correctness boundary, not a second hypervisor boundary. A fully compromised/root shared guest may compromise sibling workspace state. Repositories requiring separate hostile-guest trust domains must use separate execution profiles/VMs.
+
+### Task state
+
+Each run owns bounded process-tree, temporary, input/output, cancellation, and evidence state within one workspace. Task completion/cancellation does not delete profile/workspace persistence.
 
 ## Provider model
 
-Controller logic depends on provider-neutral lifecycle/image/environment/bridge contracts. Provider adapters own platform details.
-
-The Stage-1 sandbox-free state must remain structurally coherent with no production provider registered. A test fake may attach for architecture tests, but it is not a production security fallback.
+Controller logic depends on provider-neutral image/lifecycle/environment/bridge contracts.
 
 ### Windows / Hyper-V
 
 The Hyper-V adapter owns:
 
-- observed Hyper-V capability and management readiness;
-- Hyper-V VM identity/configuration;
+- observed Hyper-V capability/management readiness;
+- profile VM identity/configuration;
 - immutable VHD/VHDX base-image inventory;
-- per-repository differencing-disk lineage;
+- profile-owned differencing-disk lineage;
 - provider networking;
 - provider-specific lifecycle/recovery;
-- the selected Hyper-V bridge transport(s).
+- selected Hyper-V bridge transport(s).
+
+It does not need repository names.
 
 ### Linux / KVM-QEMU-libvirt
 
-The Linux adapter owns:
+The libvirt/QEMU adapter owns:
 
-- observed KVM acceleration and libvirt provider readiness;
-- QEMU/libvirt domain identity/configuration;
+- observed KVM acceleration/provider readiness;
+- profile domain identity/configuration;
 - immutable base-image inventory;
-- per-repository qcow2 backing/overlay lineage;
+- profile-owned qcow2 backing/overlay lineage;
 - libvirt/QEMU networking/storage ownership;
 - provider-specific lifecycle/recovery;
-- the selected libvirt/QEMU bridge transport(s).
+- selected bridge transport(s).
 
-The expected management direction is the locally authorized libvirt system provider, normally `qemu:///system`, unless Stage 2 research justifies a narrower equivalent adapter.
+It does not need repository names.
 
-`/dev/kvm`, `virsh`, QEMU binaries, Hyper-V installation, or a VM/domain name alone are not readiness evidence.
+Presence of `/dev/kvm`, `virsh`, QEMU, Hyper-V, or a VM/domain name alone is not readiness evidence.
+
+## Execution-profile routing
+
+Repository identity terminates at the workspace-routing layer.
+
+The current profile-routing composition uses:
+
+- stable execution-profile subject derived from profile identity;
+- deterministic workspace identity derived from stable repository subject + profile;
+- deterministic synthetic workspace target used by repository execution;
+- mapping from workspace target -> one physical profile environment;
+- shared profile access configuration validated for consistency;
+- workspace-scoped bridge paths before the physical channel is invoked.
+
+The existing persistent-environment lifecycle remains reusable because its `subject` contract was opaque. Composition changed the meaning of that subject from repository ownership to execution-profile ownership without teaching Hyper-V/libvirt about repositories.
 
 ## Control-plane flow
 
-The target primary path after Stage 6 is conceptually:
+The primary path is conceptually:
 
-`TaskSource -> ProvenanceGate -> RunCoordinator -> LeaseGate -> Host Repository/Baseline -> Repository VM -> Host Bridge -> Verification/Import -> DecisionGate -> Host Seal/Publish -> Reconciler`
+`TaskSource -> ProvenanceGate -> RunCoordinator -> LeaseGate -> Host Repository/Baseline -> Profile Router -> Repository Workspace -> VM Bridge -> Verification/Import -> DecisionGate -> Host Seal/Publish -> Reconciler`
 
 Detailed flow:
 
-1. DevBridge obtains a typed task from the configured queue/source.
+1. DevBridge obtains a typed task from a configured queue/source.
 2. Provenance is verified against exact trusted actor/revision identity.
-3. Local policy resolves the repository, semantic baseline, requested capabilities, host provider, guest OS/profile, and required environment.
-4. DB-016 lease/fence state is acquired/revalidated when coordination is enabled.
-5. The host prepares authoritative source/baseline state and resolves the exact persistent repository environment.
-6. The host verifies provider/base-image/writable-layer/environment/bridge readiness.
-7. Source/context/files cross the narrow bridge using logical identities/guest-relative paths, not arbitrary host paths.
-8. Repository-controlled deterministic operations or optional coding workers execute inside the guest.
-9. Results/candidate files return as untrusted data through the bridge.
-10. The host validates exact run/repository/baseline/source/candidate identities and imports only permitted candidate bytes into authoritative host state.
-11. DB-019 selects/reuses required verification evidence; DB-007 handles consequential human gates without blocking unrelated safe work.
-12. DevBridge seals the exact host candidate.
-13. Before publication, lease, gate, verification, baseline, and remote predecessor state are rechecked.
-14. Host Git/GitHub adapters perform the permitted effect with explicit expected state.
-15. DB-009 observes/reconciles ambiguous external effects before retry.
+3. Local policy resolves repository, semantic baseline, requested capabilities, and compatible execution profile.
+4. A deterministic repository workspace identity is resolved inside that profile.
+5. Coordination lease/fence state is acquired/revalidated when enabled.
+6. Host prepares authoritative source/baseline state.
+7. DevBridge verifies provider/base-image/profile-environment/bridge/workspace-route readiness.
+8. Source/context/files cross the bridge through workspace-scoped logical locations.
+9. Repository-controlled operations or optional coding workers execute inside the guest workspace.
+10. Results/candidate files return as untrusted data through workspace-scoped bridge paths.
+11. Host validates run/repository/baseline/source/candidate identities and imports only permitted bytes into authoritative Git state.
+12. Verification policy selects/reuses required evidence; human gates apply only where required.
+13. Host seals the exact candidate.
+14. Before publication, lease/gate/verification/baseline/remote predecessor state is rechecked.
+15. Host Git/GitHub adapters perform authorized effects with explicit expected state.
+16. Ambiguous external effects are observed/reconciled before retry.
 
-Before Stage 6, repository-controlled paths stop at provider availability/admission and fail closed; they do not continue as host execution.
+No stage of this flow redirects repository-controlled work to direct host execution when a profile is unavailable.
 
-## Persistent environment and storage model
+## Persistent storage model
 
-Base OS/tooling images are immutable/versioned. Repository writable state is provider-native copy-on-write state where supported.
+Base OS/tooling images are immutable/versioned. Profile writable state is provider-native copy-on-write where supported.
 
 Conceptually:
 
 ```text
 base-images/
-  <provider>/<guest-profile>/<image-generation>/<immutable-base>
+  <provider>/<profile>/<image-generation>/<immutable-base>
 
-environments/
-  <repository-id>/<provider>/<guest-profile>/<environment-generation>/
+profile-environments/
+  <profile-id>/<provider>/<environment-generation>/
     <provider-native-writable-layer>
     lifecycle-state
     bridge-state
+
+repository-workspaces/  # logical guest topology
+  <profile-id>/<repository-stable-id>/
+    source/
+    dependencies/
+    build/
+    temp/
 ```
 
-Exact paths/names are host-local implementation detail.
+Exact host/guest paths are implementation details and must not become externally selectable authority.
 
-Hyper-V uses differencing VHD/VHDX parent/child semantics. KVM/QEMU uses qcow2 backing/overlay semantics. Both relationships are identity-bearing state that must be revalidated rather than inferred from filenames.
+Hyper-V uses differencing VHD/VHDX semantics. KVM/QEMU uses qcow2 backing/overlay semantics. Parent/backing identity is revalidated rather than inferred from filenames.
 
-Stopping a VM/domain does not delete its writable layer. Host/daemon restart reconciles the same environment rather than creating another one blindly.
+Stopping a profile VM does not delete its disk or workspace state. Adding/removing a repository does not recreate the profile VM.
 
-Reset/reseed explicitly discards one contaminated environment generation and reconstructs it from an immutable base plus authoritative repository inputs. Reparent/rebase is never an implicit image migration shortcut.
+Profile reset/reseed is an explicit destructive operation affecting the whole profile environment. Workspace reset/reseed, when supported, is a narrower operation and must not destroy sibling workspaces.
+
+## Shared versus workspace-local tooling
+
+Share only intentionally profile-level state:
+
+- compatible OS runtimes/SDKs;
+- compilers;
+- GPU drivers/runtime;
+- safe immutable/read-mostly tooling;
+- content-addressed download caches with safe ownership semantics.
+
+Keep project semantics workspace-local:
+
+- `node_modules` and package hooks;
+- Python virtual environments;
+- build trees;
+- generated source/output;
+- repository-specific configuration;
+- mutable project caches when sharing would couple correctness/trust.
+
+A global install performed for one repository must not silently become every repository's dependency or mutation surface.
 
 ## Narrow host↔guest bridge
 
-The bridge is the only normal command/file crossing between host control plane and repository guest.
+The bridge is the only normal command/file crossing between host control plane and profile guest.
 
 It supports bounded:
 
 - command/operation invocation;
 - structured context/input;
-- source/file transfer into the guest;
-- result/evidence/candidate retrieval;
-- exit/timeout/cancellation/liveness observation;
-- exact provider/environment/run/operation identity.
+- source/file transfer into one workspace;
+- result/evidence/candidate retrieval from that workspace;
+- timeout/cancellation/liveness observation;
+- exact profile/workspace/run/operation identity.
 
-Guest-controlled messages cannot name arbitrary host paths, host executables, Git refs, credentials, provider-management targets, or control-state objects.
+Guest-controlled messages cannot name arbitrary host paths, host executables, Git refs, credentials, provider-management targets, profile identities, workspace identities, or control-state objects.
 
-Stage 4 selects provider transports after research.
-
-Relevant primitives include Hyper-V integration channels/sockets and Windows-specific PowerShell Direct, plus libvirt/QEMU virtio channels, QEMU Guest Agent, and vsock-capable transports.
-
-QEMU Guest Agent is not trusted guest evidence: a compromised guest may forge responses. That is acceptable only because the host treats every bridge response as untrusted data and validates the resulting host-side subject independently.
+Guest agents are untrusted. Host validation determines truth.
 
 ## Git and source/candidate model
 
-Authoritative Git remains host-owned under DB-008/DB-017.
+Authoritative Git remains host-owned.
 
-The guest may have ordinary Git and arbitrary guest-local commits/remotes. Those are untrusted development state. The host does not mount authoritative `.git` writable into the guest and does not give the guest publication credentials.
+Guest Git is ordinary untrusted development state. The profile VM receives no publication credential and no writable authoritative host `.git` mount.
 
-Source synchronization is host-to-guest. Candidate synchronization is guest-to-host. Stage 6 defines exact incremental transfer and drift/conflict handling.
+Source synchronization is host -> workspace. Candidate synchronization is workspace -> host. Host publication uses exact candidate/baseline identity and expected remote predecessor state.
 
-Host sealing/publication continues to use exact candidate/baseline identity and explicit expected remote predecessor state. A guest commit SHA is never publication authority by itself.
+A guest commit SHA is never publication authority by itself.
 
 ## Networking and secrets
 
-Guests have networking enabled by default so package managers, SDK installers, documentation/source fetches, browser tests, coding services, and normal development tools work naturally.
+Guests normally have network access so package managers, SDK installers, docs/source fetches, browser tests, coding services, and development tools work naturally.
 
-The confidentiality rule is therefore simple: **do not put host secrets in the guest**.
+The confidentiality rule is therefore: **do not put host secrets in the guest**.
 
-The following remain host-only:
+Host-only state includes:
 
 - GitHub tokens/CLI credentials;
 - host SSH agent/keys;
-- coordination private keys;
+- coordination keys;
 - release/signing authority;
-- daemon-control tokens/state;
+- daemon-control state;
 - authoritative Git/publication state;
-- Hyper-V/libvirt/QEMU management authority;
-- arbitrary operator-home credentials.
+- Hyper-V/libvirt management authority;
+- operator-home secrets.
 
-Private dependency/coding-service workflows require explicit later scoped designs; they do not justify copying broad host credentials into persistent guests.
+Private dependency/coding-service workflows require explicit scoped designs rather than copying broad credentials into persistent profile VMs.
 
-## Controller plans and deterministic operations
+## Deterministic operations and tools
 
-DB-013 plans remain data, not command authority.
+Controller plans remain data, not command authority.
 
-DevBridge classifies execution:
-
-- static/control operations may run on host only when they provably cannot execute repository-controlled code;
-- repository-controlled operations execute only inside the bound repository VM after Stage 6;
+- static/control operations may run on host only when provably not repository-controlled;
+- repository-controlled operations execute only inside the routed workspace/profile VM;
 - unknown operations default to repository-controlled.
 
-Controllers supply only bounded schema parameters, never raw shell/host argv/host paths/provider targets.
+Controllers provide bounded schema parameters, not raw shell/host argv/paths/provider targets.
 
-Provider absence never reclassifies repository-controlled work as host-safe.
+Host tool inventory covers control-plane/provider prerequisites. Repository-class tools are discovered/used inside profile guests and remain untrusted observations.
 
-## Tool inventory and onboarding
+## Verification/evidence
 
-DB-015 inventory reports observed capability; it never creates it.
-
-Host inventory covers control-plane/provider prerequisites:
-
-- Windows: Node, Git, Hyper-V management/bootstrap tools;
-- Linux: Node, Git, KVM/QEMU/libvirt management/bootstrap tools.
-
-Repository toolchains are discovered/used inside the guest environment after VM restoration. Guest tool observations are bound to exact environment generation and remain untrusted planning evidence. Dynamic `tool.*` manifests/schema validation stays host-controlled, while actual repository-class probing/execution moves into the guest.
-
-Without a ready routed environment, repository-class probes requiring execution are unavailable rather than redirected to host tools.
-
-## Verification and evidence
-
-DB-019 treats verification cost/evidence as control-plane state.
-
-VM/provider/bridge/security changes are legitimate qualification triggers. Documentation-only Stage 0 does not require a real VM suite that cannot exist yet; Stage 7 does.
-
-Passing evidence should bind, as relevant, to:
+Passing evidence binds relevant identities such as:
 
 - exact candidate/baseline;
-- test/policy identity;
-- host platform/provider;
-- base-image identity;
-- repository environment generation;
+- test/policy;
+- host provider;
+- base image;
+- execution profile/environment generation;
+- repository workspace identity;
 - writable-layer lineage;
-- bridge identity/version;
-- relevant guest toolchain/config.
+- bridge version;
+- guest toolchain/config.
 
-Restart/context rollover does not justify rerunning expensive tests when exact evidence remains valid. Environment reset/reseed/provider/image/candidate drift invalidates dependent evidence conservatively.
+Issue #138 adds qualification that specifically proves:
 
-Stage 1 additionally requires cheap no-provider, fake-provider, dependency/removal, and direct-host-fallback-denial evidence.
+- two/more repositories can route to one physical profile VM;
+- selecting `all` repositories does not fan out VM provisioning;
+- profile identity is repository-independent;
+- workspace IDs/paths remain distinct;
+- workspace escape/substitution/cleanup targeting fails closed at the claimed boundary;
+- profile resource shortage is typed/preflighted;
+- old repository-owned VM state is not silently adopted as the new profile.
 
-## Runtime supervision
+Real Hyper-V/libvirt boundary qualification remains required on capable hardware; hosted CI mocks/unit tests do not substitute for that evidence.
 
-DB-011 keeps release integrity, runtime artifact identity, activation, health checking, and last-known-good rollback on the trusted host.
+## Resource governance
 
-Candidate-controlled preflight/tests are untrusted executable code. Stage 1 removed the legacy host-sandbox candidate path. Stage 6 routes those checks through one local provider-native VM validation environment while DB-011 identity/rollback rules remain intact; absence fails closed.
+Resource policy belongs primarily to profiles.
 
-Candidate networking may be available; host secrets/control state are not.
+Before provisioning a profile VM, DevBridge preflights requested memory plus a bounded host reserve. Insufficient memory reports a typed `PROFILE_RESOURCES_UNAVAILABLE` failure before provider allocation.
+
+Repository count does not multiply VM RAM reservations.
+
+Future/qualified resource governance may include:
+
+- memory/vCPU limits;
+- storage growth/retention;
+- active profile/warm-pool policy;
+- idle shutdown/suspend;
+- GPU/device exclusivity;
+- task/process quotas.
+
+## Setup/reconfiguration
+
+Setup separates:
+
+1. provider/image/profile discovery;
+2. repository discovery/approval;
+3. repository workspace routing;
+4. execution enablement.
+
+`all` means all eligible repository workspaces. It never means one VM per repository.
+
+Legacy repository-owned VMs are migration candidates. They are not silently counted as profile environments.
+
+See `docs/setup.md` for operator behavior.
 
 ## Recovery
 
-DB-009's rule is universal:
+The universal rule remains:
 
 > Persist intent/evidence, observe exact current state, reconcile ambiguity, then repeat only what remains necessary.
 
-VM operations add durable objects that participate in that rule:
+Durable VM/profile/workspace objects include:
 
 - base images;
-- VHDX differencing or qcow2 overlay chains;
-- repository environment records;
-- VM/domain lifecycle state;
-- bridge operation/transfer state;
+- profile VHDX/qcow2 writable layers;
+- profile environment records;
+- workspace routes/identity;
+- bridge operations/transfers;
 - source/candidate import subjects.
 
-A missing in-memory handle is not evidence that a VM/disk disappeared. A failed guest command is not permission to delete persistent environment state. Deletion/reset/reseed requires exact ownership proof.
+A failed guest command is not permission to delete persistent profile/workspace state. Deletion/reset/reseed requires exact ownership proof.
 
-Provider removal in Stage 1 is also a recovery concern: durable work that depended on the deleted sandbox must reconcile to unavailable/failed state rather than being replayed through a direct-host fallback.
+## Migration history
 
-## Human checkpoints
+The VM program first removed host sandboxes and restored VM-only execution. The original Stage 3 implementation then bound persistent VM identity to repository identity.
 
-DB-007 remains checkpoint-and-proceed.
+Issue #138 corrects only that ownership topology while preserving neutral lifecycle/provider/bridge/security mechanisms.
 
-Consequential decisions can gate a specific boundary while reversible work continues. Remote approval does not grant new host filesystem, credential, VM-management, executable, guest-secret, peer-trust, or publication capability.
+Historical Stage 3 documentation and old repository-owned VMs remain migration evidence. Active architecture is profile-owned.
 
-## Workstation/resource governance
-
-DB-018 currently provides serialized task admission, host child priority for trusted/provider processes, and cooperative pause/resume.
-
-Host process priority is QoS, not containment and cannot justify repository execution on the host during the no-provider interval.
-
-VM resource limits/observations belong to the provider layer. Stage 7 reports only CPU/memory/disk/lifecycle constraints Hyper-V or libvirt/QEMU can actually enforce/observe. Persistent disk growth/cleanup is bounded without deleting unowned storage.
-
-DB-020 does not create general parallel task scheduling.
-
-## Migration stages
-
-Issue #107 is the active program:
-
-1. Stage 0 — architecture/spec ratification and sandbox-first migration inventory (#108).
-2. Stage 1 — remove host sandbox execution, expose/prove LEGO studs, establish fail-closed no-provider state (#109).
-3. Stage 2 — Hyper-V + KVM/QEMU/libvirt host backends and base-image lifecycle (#110).
-4. Stage 3 — persistent repository/OS writable-layer and VM lifecycle on both providers (#111).
-5. Stage 4 — provider-adapted host↔guest command/file bridge (#112).
-6. Stage 5 — guest bootstrap/network/toolchain behavior (#113).
-7. Stage 6 — restore deterministic operations/workers/candidate execution through persistent VMs only (#114).
-8. Stage 7 — provider/guest matrix verification/doctor/recovery/CI/resource/security/LEGO acceptance (#115).
-9. Stage 8 — Windows/Linux installer/setup/reconfiguration integration (#116).
-10. Stage 9 — finalize VM-only architecture and remove remaining migration scaffolding (#117).
-
-Stages 2–5 deliberately operate while normal repository-controlled execution is unavailable. Do not reintroduce Bubblewrap/AppContainer/ProcessContainer or direct-host execution to bridge the gap.
+See `docs/vm-migration.md` for the combined migration map.
 
 ## Documentation authority
 
-`specs/DB-001` through `specs/DB-020` are the live normative contracts. DB-020 governs the target repository-execution security boundary and migration sequence.
+The live target is defined by:
 
-`AGENTS.md`, this architecture document, `docs/vm-migration.md`, `docs/vm-lego-studs.md`, `docs/bootstrap.md`, `docs/tool-profiles.md`, `docs/testing/verification-governance.md`, and `docs/roadmap.md` describe the current engineering/operating view.
+- `specs/DB-020-vm-execution-boundary.md`;
+- `docs/execution-profile-environments.md`;
+- this architecture document;
+- `docs/setup.md`;
+- `docs/vm-migration.md`;
+- active VM/setup/qualification issues including #103, #107, #115, #116, and #138.
 
-Checksum-bound handoffs and point-in-time testing audits are historical evidence. They remain valuable but do not override newer active specifications.
+Historical handoffs, testing audits, superseded Stage 3 ownership language, and old sandbox PRs remain evidence but do not override newer active contracts.
